@@ -68,6 +68,20 @@ class RdbCoreStack(Stack):
             sign_in_aliases=cognito.SignInAliases(email=True),
             auto_verify=cognito.AutoVerifiedAttrs(email=True),
             account_recovery=cognito.AccountRecovery.EMAIL_ONLY,
+            # Invitation email (from Cognito's default sender; SES is a later improvement).
+            # Keep {username} and {####} exactly: Cognito fills in the email and temporary password.
+            user_invitation=cognito.UserInvitationConfig(
+                email_subject="You've been invited to RADaR Dashboards",
+                email_body=(
+                    "Hi,<br><br>"
+                    "You've been invited to RADaR Dashboards. Open the dashboard link your RADaR "
+                    "contact shared with you and sign in with these details:<br><br>"
+                    "Email: {username}<br>"
+                    "Temporary password: {####}<br><br>"
+                    "You'll be asked to choose a new password when you first sign in.<br><br>"
+                    "Thanks,<br>RADaR"
+                ),
+            ),
             removal_policy=RemovalPolicy.RETAIN,
         )
         for group in ("admin", "analyst", "client"):
@@ -125,19 +139,43 @@ class RdbCoreStack(Stack):
                 ],
             )
         )
-        # Cognito admin ops for user management (admin screens), scoped to our pool.
+        # Lambda log writes (the rdb-app stack creates the /aws/lambda/rdb-api log group).
+        api_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["logs:CreateLogStream", "logs:PutLogEvents"],
+                resources=[
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/lambda/rdb-api:*"
+                ],
+            )
+        )
+        # Cognito admin ops for user management, scoped to our pool. NO delete actions: users are
+        # disabled, never deleted.
         api_role.add_to_policy(
             iam.PolicyStatement(
                 actions=[
-                    "cognito-idp:AdminCreateUser",
-                    "cognito-idp:AdminAddUserToGroup",
-                    "cognito-idp:AdminRemoveUserFromGroup",
-                    "cognito-idp:AdminGetUser",
-                    "cognito-idp:ListUsers",
+                    f"cognito-idp:{a}"
+                    for a in (
+                        "AdminCreateUser",
+                        "AdminGetUser",
+                        "AdminAddUserToGroup",
+                        "AdminRemoveUserFromGroup",
+                        "AdminListGroupsForUser",
+                        "AdminDisableUser",
+                        "AdminEnableUser",
+                        "AdminUserGlobalSignOut",
+                        "ListUsers",
+                        "ListUsersInGroup",
+                    )
                 ],
                 resources=[pool.user_pool_arn],
             )
         )
+
+        # Referenced by the rdb-app stack (CDK turns these into exports)
+        self.table_name = table.table_name
+        self.data_bucket_name = bucket.bucket_name
+        self.user_pool_id = pool.user_pool_id
+        self.app_client_id = app_client.user_pool_client_id
 
         CfnOutput(self, "TableName", value=table.table_name)
         CfnOutput(self, "DataBucketName", value=bucket.bucket_name)

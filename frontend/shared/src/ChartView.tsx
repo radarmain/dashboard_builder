@@ -6,7 +6,13 @@ import {
 import { columnIsDate, columnIsNumeric, formatDate, formatValue, toNumber, toTime } from "./format";
 import type { ChartDef, ElementData } from "./spec";
 
-export const COLORS = ["#2563eb", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6", "#06b6d4", "#ec4899", "#84cc16"];
+import { CHART_COLORS as COLORS, T } from "./tokens";
+
+const AXIS = { fontSize: 11, fontFamily: T.font, fill: T.onSurfaceVariant };
+const TIP_BOX = {
+  borderRadius: 12, border: `1px solid ${T.outlineVariant}`, background: T.surface, color: T.onSurface,
+  fontFamily: T.font, fontSize: 12, boxShadow: "0 2px 8px rgba(0,0,0,0.12)", padding: "8px 12px",
+};
 
 type XKind = "time" | "number" | "category";
 interface Prepared {
@@ -79,14 +85,14 @@ export function ChartView({ chart, data }: { chart: ChartDef; data: ElementData 
       {...(timeAxis || (xKind === "number" && chart.kind !== "bar")
         ? { type: "number" as const, domain: ["dataMin", "dataMax"] as [string, string], scale: timeAxis ? ("time" as const) : ("auto" as const) }
         : { interval: "preserveStartEnd" as const })}
-      tick={{ fontSize: 11 }}
+      tick={AXIS} stroke={T.outline}
     />
   );
-  const yAxis = <YAxis tick={{ fontSize: 11 }} tickFormatter={fmtY(keys[0])} width={70} />;
+  const yAxis = <YAxis tick={AXIS} stroke={T.outline} tickFormatter={fmtY(keys[0])} width={70} />;
   const common = { data: rows, margin: { top: 8, right: 16, bottom: 4, left: 0 } };
-  const tip = <Tooltip labelFormatter={fmtX} formatter={tipFmt as never} />;
-  const legend = keys.length > 1 ? <Legend wrapperStyle={{ fontSize: 12 }} /> : null;
-  const grid = <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />;
+  const tip = <Tooltip labelFormatter={fmtX} formatter={tipFmt as never} contentStyle={TIP_BOX} itemStyle={{ color: T.onSurface }} cursor={{ fill: T.surfaceVariant, fillOpacity: 0.5 }} />;
+  const legend = keys.length > 1 ? <Legend wrapperStyle={{ fontSize: 12, fontFamily: T.font, color: T.onSurfaceVariant }} /> : null;
+  const grid = <CartesianGrid strokeDasharray="3 3" stroke={T.outlineVariant} vertical={false} />;
 
   let body: React.ReactElement;
   switch (chart.kind) {
@@ -100,8 +106,8 @@ export function ChartView({ chart, data }: { chart: ChartDef; data: ElementData 
       break;
     case "scatter":
       body = <ScatterChart margin={common.margin}>{grid}
-        <XAxis dataKey="x" type="number" domain={["dataMin", "dataMax"]} tickFormatter={fmtX} tick={{ fontSize: 11 }} />
-        <YAxis dataKey="y" type="number" tick={{ fontSize: 11 }} width={70} />{tip}{legend}
+        <XAxis dataKey="x" type="number" domain={["dataMin", "dataMax"]} tickFormatter={fmtX} tick={AXIS} stroke={T.outline} />
+        <YAxis dataKey="y" type="number" tick={AXIS} stroke={T.outline} width={70} />{tip}{legend}
         {keys.map((k, i) => (
           <Scatter key={k} name={k} fill={COLORS[i % COLORS.length]}
             data={rows.map((r) => ({ x: r.x, y: r[k] })).filter((p) => p.y !== null)} />
@@ -110,7 +116,7 @@ export function ChartView({ chart, data }: { chart: ChartDef; data: ElementData 
     case "pie": {
       const k = keys[0];
       const slices = rows.map((r) => ({ name: String(xKind === "time" ? formatDate(Number(r.x)) : r.x), value: Math.max(0, Number(r[k] ?? 0)) }));
-      body = <PieChart><Tooltip formatter={tipFmt as never} /><Legend wrapperStyle={{ fontSize: 12 }} />
+      body = <PieChart><Tooltip formatter={tipFmt as never} contentStyle={TIP_BOX} itemStyle={{ color: T.onSurface }} /><Legend wrapperStyle={{ fontSize: 12, fontFamily: T.font, color: T.onSurfaceVariant }} />
         <Pie data={slices} dataKey="value" nameKey="name" outerRadius="75%" label={slices.length <= 8}>
           {slices.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}</Pie></PieChart>;
       break;
@@ -124,7 +130,7 @@ export function ChartView({ chart, data }: { chart: ChartDef; data: ElementData 
 
 export function Notice({ text, tone = "muted" }: { text: string; tone?: "muted" | "error" }) {
   return (
-    <div className={`flex h-full items-center justify-center p-3 text-center text-sm ${tone === "error" ? "text-red-600" : "text-slate-400"}`}>
+    <div style={{ display: "flex", height: "100%", alignItems: "center", justifyContent: "center", padding: 12, textAlign: "center", fontSize: 14, fontFamily: T.font, color: tone === "error" ? T.error : T.onSurfaceVariant }}>
       {text}
     </div>
   );

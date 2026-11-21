@@ -2,7 +2,16 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+
+from app.slugs import client_slug_error
 
 Slug = Annotated[
     str,
@@ -14,7 +23,15 @@ Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max
 # ---------- entities ----------
 class ClientCreate(BaseModel):
     name: Name
-    slug: Slug
+    slug: Slug  # stricter subdomain rules below
+
+    @field_validator("slug")
+    @classmethod
+    def _subdomain_rules(cls, v: str) -> str:
+        err = client_slug_error(v)
+        if err:
+            raise ValueError(err)
+        return v
 
 
 class Client(ClientCreate):
@@ -33,9 +50,20 @@ class Project(ProjectCreate):
     created_at: str
 
 
+Description = Annotated[str, StringConstraints(strip_whitespace=True, max_length=300)]
+
+
 class ViewCreate(BaseModel):
     name: Name
     slug: Slug
+    description: Description | None = None
+
+
+class ViewPatch(BaseModel):
+    """Metadata only (not in the revision spec); applies immediately. Slug is immutable."""
+
+    name: Name | None = None
+    description: Description | None = None
 
 
 class View(ViewCreate):

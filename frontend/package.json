@@ -1,5 +1,9 @@
 {
   "name": "rdb-frontend",
   "private": true,
-  "workspaces": ["shared", "builder", "viewer"]
+  "workspaces": ["shared", "core", "portal", "builder", "viewer"],
+  "scripts": {
+    "setup": "node ../scripts/ensure_lightningcss.mjs",
+    "typecheck": "npm run build --workspaces --if-present"
+  }
 }

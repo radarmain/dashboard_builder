@@ -51,14 +51,15 @@ def main() -> None:
     ENV.write_text("\n".join(new_lines) + "\n")
     print(f"wrote {ENV.name}: {', '.join(sorted(values))}")
 
-    # Builder reads only public VITE_ values from its own gitignored .env.local.
+    # Builder and Viewer read only public VITE_ values from their own gitignored .env.local.
     # VITE_API_URL is left unset on purpose: the dev server proxies /api to localhost:8000.
     vite = {k: v for k, v in values.items() if k.startswith("VITE_") and k != "VITE_API_URL"}
     for k in ("VITE_COGNITO_USER_POOL_ID", "VITE_COGNITO_APP_CLIENT_ID", "VITE_AWS_REGION"):
         vite.setdefault(k, values.get(k.replace("VITE_", ""), ""))
-    target = ROOT / "frontend" / "builder" / ".env.local"
-    target.write_text("".join(f"{k}={v}\n" for k, v in sorted(vite.items())))
-    print(f"wrote {target.relative_to(ROOT)}: {', '.join(sorted(vite))}")
+    for app in ("builder", "viewer"):
+        target = ROOT / "frontend" / app / ".env.local"
+        target.write_text("".join(f"{k}={v}\n" for k, v in sorted(vite.items())))
+        print(f"wrote {target.relative_to(ROOT)}: {', '.join(sorted(vite))}")
 
 
 if __name__ == "__main__":

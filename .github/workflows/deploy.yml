@@ -1,0 +1,54 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # GitHub OIDC -> AWS (no stored keys)
+  contents: read
+
+concurrency:
+  group: rdb-deploy
+  cancel-in-progress: false # never run two deploys at once; queue instead
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      AWS_REGION: us-east-2
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # The API image is linux/arm64 (Lambda on Graviton); build it under emulation on x86 runners.
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Not a secret. Created by the rdb-app stack; trusts only repo:radarmain/dashboard_builder:ref:refs/heads/main
+          role-to-assume: arn:aws:iam::351995550302:role/rdb-github-deploy
+          aws-region: us-east-2
+
+      - name: Python venv for CDK
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q -r infra/requirements.txt
+
+      - name: Custom-domain config (infra/config.json is committed; empty cert_arn = default domains only)
+        run: cat infra/config.json
+
+      - name: Deploy
+        run: scripts/deploy.sh --yes

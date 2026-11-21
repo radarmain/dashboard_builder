@@ -3,8 +3,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.routes_chat import router as chat_router
 from app.routes_core import router as core_router
 from app.routes_gbq import router as gbq_router
+from app.routes_portal import router as portal_router
+from app.routes_users import router as users_router
 
 app = FastAPI(title="RDB API")
 
@@ -17,6 +20,9 @@ app.add_middleware(
 
 app.include_router(core_router)
 app.include_router(gbq_router)
+app.include_router(chat_router)
+app.include_router(portal_router)
+app.include_router(users_router)
 
 
 @app.get("/health")

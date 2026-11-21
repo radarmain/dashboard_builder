@@ -1,0 +1,24 @@
+/* Shared renderer animation + state layers. Colors come from --rdb-* variables (with fallbacks). */
+@keyframes rdb-pop {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes rdb-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.rdb-pop { animation: rdb-pop 260ms cubic-bezier(0.2, 0, 0, 1) both; }
+.rdb-skeleton {
+  background: linear-gradient(90deg, var(--rdb-surface-container, #F1EDF1) 25%, var(--rdb-surface-container-high, #EBE7EB) 50%, var(--rdb-surface-container, #F1EDF1) 75%);
+  background-size: 200% 100%;
+  animation: rdb-shimmer 1.6s linear infinite;
+}
+.rdb-card { transition: box-shadow 150ms, border-color 150ms; }
+.rdb-card--selectable { cursor: pointer; }
+.rdb-card--selectable:hover { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--rdb-primary, #421540) 4%, transparent); }
+.rdb-card--selectable:focus-visible { outline: 2px solid var(--rdb-secondary, #00B8B0); outline-offset: 2px; }
+.rdb-row:hover { background: color-mix(in srgb, var(--rdb-primary, #421540) 6%, transparent); }
+@media (prefers-reduced-motion: reduce) {
+  .rdb-pop, .rdb-skeleton { animation: none; }
+  .rdb-card { transition: none; }
+}

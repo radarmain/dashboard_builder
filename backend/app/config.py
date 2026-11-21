@@ -22,6 +22,12 @@ class Settings(BaseModel):
     query_timeout_seconds: int
     query_row_cap: int
     default_cache_ttl_seconds: int
+    bedrock_model_id: str
+    chat_max_bytes_billed: int
+    chat_max_output_tokens: int
+    chat_timeout_seconds: int
+    chat_max_iterations: int
+    staff_email_domains: list[str]
 
     @property
     def issuer(self) -> str:
@@ -42,4 +48,16 @@ def get_settings() -> Settings:
         query_timeout_seconds=int(env.get("RDB_QUERY_TIMEOUT_SECONDS", "60")),
         query_row_cap=int(env.get("RDB_QUERY_ROW_CAP", "10000")),
         default_cache_ttl_seconds=int(env.get("RDB_CACHE_TTL_SECONDS", "3600")),
+        bedrock_model_id=env.get("RDB_BEDROCK_MODEL_ID")
+        or env.get("BEDROCK_MODEL_ID")
+        or "us.anthropic.claude-sonnet-5-5",
+        chat_max_bytes_billed=int(env.get("RDB_CHAT_MAX_BYTES_BILLED", "2000000000")),
+        chat_max_output_tokens=int(env.get("RDB_CHAT_MAX_OUTPUT_TOKENS", "4096")),
+        chat_timeout_seconds=int(env.get("RDB_CHAT_TIMEOUT_SECONDS", "120")),
+        chat_max_iterations=int(env.get("RDB_CHAT_MAX_ITERATIONS", "8")),
+        staff_email_domains=[
+            d.strip().lower().lstrip("@")
+            for d in env.get("RDB_STAFF_EMAIL_DOMAINS", "radar-analytics.com").split(",")
+            if d.strip()
+        ],
     )

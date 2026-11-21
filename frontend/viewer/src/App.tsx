@@ -1,19 +1,26 @@
-import { useEffect, useState } from "react";
+import { AuthProvider, RequireAuth, isBuilder } from "@rdb/core";
+import { PortalProvider, hostClientFor, portalRoutes } from "@rdb/portal";
+import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { Home } from "./Home";
 
-const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+// Host mode when served from <client>.radar-analytics.com; path mode on localhost / cloudfront.net.
+const HOST_CLIENT = hostClientFor(window.location.hostname);
 
 export default function App() {
-  const [health, setHealth] = useState("checking...");
-  useEffect(() => {
-    fetch(`${API}/health`)
-      .then((r) => r.json())
-      .then((j) => setHealth(j.status))
-      .catch(() => setHealth("unreachable"));
-  }, []);
   return (
-    <main style={{ fontFamily: "sans-serif", padding: 24 }}>
-      <h1>RDB Viewer</h1>
-      <p>API health: {health}</p>
-    </main>
+    <AuthProvider>
+      <RequireAuth
+        appName="RADaR Dashboards"
+        allow={(id) => isBuilder(id) || id.groups.includes("client")}
+        deniedTitle="No dashboard access"
+        deniedBody="Your account isn't set up to view dashboards yet. Contact your RADaR team."
+      >
+        <BrowserRouter>
+          <PortalProvider basePath="" preview={false} hostClient={HOST_CLIENT}>
+            <Routes>{portalRoutes("", HOST_CLIENT ? null : <Route path="/" element={<Home />} />, HOST_CLIENT)}</Routes>
+          </PortalProvider>
+        </BrowserRouter>
+      </RequireAuth>
+    </AuthProvider>
   );
 }

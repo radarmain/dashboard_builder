@@ -24,7 +24,8 @@ Keys: PK (string), SK (string). On-demand billing. Add GSIs only if needed.
 | Client | CLIENT#{client_slug} | META | name, created_at, created_by |
 | Project | CLIENT#{client_slug} | PROJECT#{project_slug} | name, status, created_at |
 | View | CLIENT#{client_slug} | VIEW#{project_slug}#{view_slug} | name, status, draft_revision, published_revision, updated_at |
-| Access | USER#{cognito_sub} | CLIENT#{client_slug} | which clients a user may access (for client users) |
+| Access | USER#{cognito_sub} | CLIENT#{client_slug} | which clients a user may access (for client users); `created_at` |
+| Access mirror | CLIENT#{client_slug} | USER#{cognito_sub} | reverse of the access item: `email` (lowercase), `added_by` (sub), `added_at`. Always written/deleted together with the access item (TransactWriteItems). Lists a client's users without a scan. |
 
 Access patterns to support: list all clients (add a simple GSI or a CLIENTS listing item if scanning becomes awkward; a scan is fine at prototype scale), list projects for a client, list views for a project, check a user's client access.
 
@@ -32,6 +33,7 @@ Slugs: lowercase letters, numbers, hyphens; unique within their parent; immutabl
 
 ## Cognito
 
-- Groups: admin, analyst, client.
+- Groups: admin, analyst, client. A user is in EXACTLY ONE group. Client users are never converted to staff or the reverse.
+- Users are never deleted, only disabled (`AdminDisableUser` + `AdminUserGlobalSignOut`). Staff emails must be on `RDB_STAFF_EMAIL_DOMAINS`.
 - Client users are mapped to allowed client slug(s) via the Access items above (and/or a token claim).
 - admin can create clients and manage users; analyst can build; client can only read published views of assigned clients.

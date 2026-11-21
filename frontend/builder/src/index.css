@@ -1,6 +1,5 @@
 @import "tailwindcss";
 @source "../../shared/src";
 
-body {
-  @apply bg-slate-50 text-slate-800;
-}
+/* Tailwind is used for layout utilities only; colors/typography come from theme.ts (MUI + --rdb-* vars). */
+html, body, #root { height: 100%; }

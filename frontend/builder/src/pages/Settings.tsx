@@ -1,6 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import {
+  Autocomplete, Box, Checkbox, Chip, Collapse, FormControlLabel, Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
+  TextField, Typography,
+} from "@mui/material";
 import { get, put, type ProjectConfig, type SchemaSnapshot } from "../api";
-import { Btn, Card, ErrorBox, Field, errMsg, inputCls } from "../ui";
+import { MONO } from "@rdb/core";
+import { Btn, Card, ErrorBox, Loading, errMsg, monoSx } from "../ui";
 
 // In-memory caches (the BigQuery project list is ~93 entries and rarely changes).
 const cache = {
@@ -22,27 +27,17 @@ async function loadTables(bq: string, d: string) {
   return cache.tables.get(k)!;
 }
 
-function SearchSelect({ value, options, onChange, placeholder }: {
-  value: string; options: string[]; onChange: (v: string) => void; placeholder: string;
+function SearchSelect({ value, options, onChange, label, helperText, disabled }: {
+  value: string; options: string[]; onChange: (v: string) => void; label: string; helperText?: string; disabled?: boolean;
 }) {
-  const [q, setQ] = useState("");
-  const [open, setOpen] = useState(false);
-  const shown = useMemo(() => options.filter((o) => o.toLowerCase().includes(q.toLowerCase())).slice(0, 50), [options, q]);
   return (
-    <div className="relative">
-      <input className={inputCls} placeholder={placeholder} value={open ? q : value}
-        onFocus={() => { setOpen(true); setQ(""); }} onBlur={() => setTimeout(() => setOpen(false), 150)}
-        onChange={(e) => setQ(e.target.value)} />
-      {open && (
-        <ul className="absolute z-10 mt-1 max-h-64 w-full overflow-auto rounded-md border border-slate-200 bg-white shadow-lg">
-          {shown.length === 0 && <li className="px-3 py-2 text-sm text-slate-400">No matches</li>}
-          {shown.map((o) => (
-            <li key={o} onMouseDown={() => { onChange(o); setOpen(false); }}
-              className={`cursor-pointer px-3 py-1.5 text-sm hover:bg-blue-50 ${o === value ? "font-medium text-blue-700" : ""}`}>{o}</li>
-          ))}
-        </ul>
-      )}
-    </div>
+    <Autocomplete
+      options={options} value={(value || null) as unknown as string} disableClearable disabled={disabled}
+      onChange={(_, v) => onChange(v)}
+      slotProps={{ listbox: { sx: { maxHeight: 256 } } }}
+      filterOptions={(opts, st) => opts.filter((o) => o.toLowerCase().includes(st.inputValue.toLowerCase())).slice(0, 50)}
+      renderInput={(params) => <TextField {...params} label={label} helperText={helperText} />}
+    />
   );
 }
 
@@ -111,66 +106,62 @@ export function Settings({ client, project, initial, onSaved }: {
   }
 
   return (
-    <div className="max-w-4xl space-y-6">
-      <Card className="space-y-4">
-        <h2 className="text-lg font-medium">BigQuery connection</h2>
-        <Field label="BigQuery project" hint={bqProjects.length ? `${bqProjects.length} projects visible. Type to filter.` : "Loading projects…"}>
-          <SearchSelect value={bq} options={bqProjects} placeholder="Search projects…"
-            onChange={(v) => { if (v !== bq) { setBq(v); setSelected([]); } }} />
-        </Field>
+    <Box sx={{ maxWidth: 896, display: "grid", gap: 3 }}>
+      <Card sx={{ display: "grid", gap: 2.5 }}>
+        <Typography variant="h6" component="h2">BigQuery connection</Typography>
+        <SearchSelect label="BigQuery project" value={bq} options={bqProjects}
+          helperText={bqProjects.length ? `${bqProjects.length} projects visible. Type to filter.` : "Loading projects…"}
+          onChange={(v) => { if (v !== bq) { setBq(v); setSelected([]); } }} />
         {bq && (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <Field label="Dataset" hint="Pick a dataset to browse its tables. Selections persist across datasets.">
-              <SearchSelect value={dataset} options={datasets} placeholder="Search datasets…" onChange={setDataset} />
-            </Field>
-            <Field label="Tables">
-              <input className={inputCls} placeholder="Filter tables…" value={tableQ} onChange={(e) => setTableQ(e.target.value)} disabled={!dataset} />
-            </Field>
-          </div>
+          <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" } }}>
+            <SearchSelect label="Dataset" value={dataset} options={datasets} onChange={setDataset}
+              helperText="Pick a dataset to browse its tables. Selections persist across datasets." />
+            <TextField label="Filter tables" value={tableQ} onChange={(e) => setTableQ(e.target.value)} disabled={!dataset} />
+          </Box>
         )}
         {dataset && (
-          <div className="max-h-64 overflow-auto rounded-md border border-slate-200">
-            {loadingList && <div className="p-3 text-sm text-slate-400">Loading tables…</div>}
-            {!loadingList && shownTables.length === 0 && <div className="p-3 text-sm text-slate-400">No tables</div>}
+          <Paper variant="outlined" sx={{ maxHeight: 256, overflow: "auto", borderColor: "divider" }}>
+            {loadingList && <Box sx={{ px: 2 }}><Loading label="Loading tables…" /></Box>}
+            {!loadingList && shownTables.length === 0 && <Typography variant="body2" sx={{ p: 2, color: "text.secondary" }}>No tables</Typography>}
             {shownTables.map((t) => (
-              <label key={t.table_id} className="flex cursor-pointer items-center gap-2 border-b border-slate-100 px-3 py-1.5 text-sm hover:bg-slate-50">
-                <input type="checkbox" checked={selected.includes(fqn(t.table_id))} onChange={() => toggle(fqn(t.table_id))} />
-                <span className="font-mono">{t.table_id}</span>
-                <span className="text-xs text-slate-400">{t.type}</span>
-              </label>
+              <FormControlLabel key={t.table_id} sx={{ display: "flex", m: 0, px: 1.5, py: 0.25, borderBottom: 1, borderColor: "divider", "&:hover": { bgcolor: "action.hover" } }}
+                control={<Checkbox checked={selected.includes(fqn(t.table_id))} onChange={() => toggle(fqn(t.table_id))} />}
+                label={<Box sx={{ display: "flex", gap: 1, alignItems: "baseline" }}>
+                  <Typography variant="body2" sx={monoSx}>{t.table_id}</Typography>
+                  <Typography variant="caption" color="text.secondary">{t.type}</Typography>
+                </Box>} />
             ))}
-          </div>
+          </Paper>
         )}
-        <div>
-          <div className="mb-1 text-sm font-medium text-slate-700">Connected tables ({selected.length})</div>
-          {selected.length === 0 && <div className="text-sm text-slate-400">None selected</div>}
-          <div className="flex flex-wrap gap-2">
+        <Box>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>Connected tables ({selected.length})</Typography>
+          {selected.length === 0 && <Typography variant="body2" color="text.secondary">None selected</Typography>}
+          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
             {selected.map((s) => (
-              <span key={s} className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-1 font-mono text-xs text-blue-800">
-                {s.split(".").slice(1).join(".")}
-                <button onClick={() => toggle(s)} className="text-blue-400 hover:text-blue-700" title="Remove">×</button>
-              </span>
+              <Chip key={s} label={s.split(".").slice(1).join(".")} onDelete={() => toggle(s)} sx={{ fontFamily: MONO, bgcolor: (t) => t.palette.tokens.primaryContainer, color: (t) => t.palette.tokens.onPrimaryContainer }} />
             ))}
-          </div>
-        </div>
-        <Field label="Max bytes billed per query (GB)" hint={`Leave blank to use the default${defaultGb ? ` (${defaultGb} GB)` : ""}. Queries estimated above the cap are rejected.`}>
-          <input className={`${inputCls} max-w-[10rem]`} inputMode="decimal" placeholder={defaultGb ? String(defaultGb) : ""} value={gb} onChange={(e) => setGb(e.target.value)} />
-        </Field>
+          </Box>
+        </Box>
+        <TextField label="Max bytes billed per query (GB)" value={gb} onChange={(e) => setGb(e.target.value)} sx={{ maxWidth: 280 }}
+          placeholder={defaultGb ? String(defaultGb) : ""} slotProps={{ htmlInput: { inputMode: "decimal" } }}
+          helperText={`Leave blank to use the default${defaultGb ? ` (${defaultGb} GB)` : ""}. Queries estimated above the cap are rejected.`} />
         <ErrorBox error={error} />
-        <div className="flex items-center gap-3">
+        <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
           <Btn onClick={save} disabled={saving || !bq || selected.length === 0 || !dirty}>{saving ? "Saving and snapshotting…" : "Save settings"}</Btn>
-          {!dirty && saved.length > 0 && <span className="text-sm text-green-700">Saved</span>}
-        </div>
+          {!dirty && saved.length > 0 && <Typography variant="body2" sx={{ color: "success.main" }}>Saved</Typography>}
+        </Box>
       </Card>
 
       {saved.length > 0 && (
-        <div className="space-y-3">
-          <h2 className="text-lg font-medium">Table schemas</h2>
-          <p className="text-sm text-slate-500">Descriptions help the AI write accurate SQL.</p>
+        <Box sx={{ display: "grid", gap: 1.5 }}>
+          <Box>
+            <Typography variant="h6" component="h2">Table schemas</Typography>
+            <Typography variant="body2" color="text.secondary">Descriptions help the AI write accurate SQL.</Typography>
+          </Box>
           {saved.map((t) => <SchemaCard key={t} base={base} fqn={t} />)}
-        </div>
+        </Box>
       )}
-    </div>
+    </Box>
   );
 }
 
@@ -196,41 +187,45 @@ function SchemaCard({ base, fqn }: { base: string; fqn: string }) {
   }
 
   return (
-    <Card>
-      <button className="flex w-full items-center justify-between text-left" onClick={() => setOpen(!open)}>
-        <span className="font-mono text-sm font-medium">{dataset}.{table}</span>
-        <span className="text-xs text-slate-500">
+    <Card sx={{ p: 0 }}>
+      <Box component="button" onClick={() => setOpen(!open)} aria-expanded={open}
+        sx={{ all: "unset", boxSizing: "border-box", cursor: "pointer", display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between", p: 2.5, borderRadius: "12px",
+          "&:hover": { bgcolor: "action.hover" } }}>
+        <Typography variant="subtitle2" sx={monoSx}>{dataset}.{table}</Typography>
+        <Typography variant="caption" color="text.secondary">
           {snap ? `${snap.columns.length} columns · ${snap.num_rows?.toLocaleString() ?? "?"} rows` : "loading…"} {open ? "▲" : "▼"}
-        </span>
-      </button>
-      <ErrorBox error={error} />
-      {open && snap && (
-        <div className="mt-3 space-y-3">
-          <div className="max-h-96 overflow-auto rounded border border-slate-200">
-            <table className="min-w-full text-sm">
-              <thead className="sticky top-0 bg-slate-100 text-left text-slate-600">
-                <tr><th className="px-3 py-1.5">Column</th><th className="px-3 py-1.5">Type</th><th className="w-2/3 px-3 py-1.5">Description</th></tr>
-              </thead>
-              <tbody>
-                {snap.columns.map((c) => (
-                  <tr key={c.name} className="border-t border-slate-100">
-                    <td className="whitespace-nowrap px-3 py-1 font-mono">{c.name}</td>
-                    <td className="whitespace-nowrap px-3 py-1 text-slate-500">{c.type}{c.mode === "REPEATED" ? "[]" : ""}</td>
-                    <td className="px-3 py-1">
-                      <input className={inputCls} value={desc[c.name] ?? ""} placeholder={c.bq_description || "Add a description"}
-                        onChange={(e) => setDesc((d) => ({ ...d, [c.name]: e.target.value }))} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="flex items-center gap-3">
-            <Btn onClick={save}>Save descriptions</Btn>
-            {msg && <span className="text-sm text-green-700">{msg}</span>}
-          </div>
-        </div>
-      )}
+        </Typography>
+      </Box>
+      {error && <Box sx={{ px: 2.5, pb: 2 }}><ErrorBox error={error} /></Box>}
+      <Collapse in={open && !!snap} unmountOnExit>
+        {snap && (
+          <Box sx={{ display: "grid", gap: 2, px: 2.5, pb: 2.5 }}>
+            <TableContainer sx={{ maxHeight: 384, border: 1, borderColor: "divider", borderRadius: "12px" }}>
+              <Table size="small" stickyHeader>
+                <TableHead>
+                  <TableRow><TableCell>Column</TableCell><TableCell>Type</TableCell><TableCell sx={{ width: "60%" }}>Description</TableCell></TableRow>
+                </TableHead>
+                <TableBody>
+                  {snap.columns.map((c) => (
+                    <TableRow key={c.name} hover>
+                      <TableCell sx={{ whiteSpace: "nowrap", ...monoSx }}>{c.name}</TableCell>
+                      <TableCell sx={{ whiteSpace: "nowrap", color: "text.secondary" }}>{c.type}{c.mode === "REPEATED" ? "[]" : ""}</TableCell>
+                      <TableCell>
+                        <TextField value={desc[c.name] ?? ""} placeholder={c.bq_description || "Add a description"} slotProps={{ htmlInput: { "aria-label": `Description for ${c.name}` } }}
+                          onChange={(e) => setDesc((d) => ({ ...d, [c.name]: e.target.value }))} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+              <Btn onClick={save}>Save descriptions</Btn>
+              {msg && <Typography variant="body2" sx={{ color: "success.main" }}>{msg}</Typography>}
+            </Box>
+          </Box>
+        )}
+      </Collapse>
     </Card>
   );
 }

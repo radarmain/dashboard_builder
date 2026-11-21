@@ -10,6 +10,7 @@ export default defineConfig({
   optimizeDeps: { esbuildOptions: { define: { global: "globalThis" } } },
   // /api is proxied to the local FastAPI server, so no CORS is needed in dev.
   server: {
+    fs: { allow: ["../.."] }, // portal imports backend/app/reserved_slugs.json
     port: 5173,
     proxy: { "/api": "http://localhost:8000" },
   },

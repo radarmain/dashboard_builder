@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { SpecRenderer, type DataMap, type ElementData, type ElementType, type ViewElement, type ViewSpec } from "@rdb/shared";
-import { ApiError, get, post, type ViewSummary } from "../api";
-import { Badge, Btn, ErrorBox, errMsg, viewStatus } from "../ui";
+import { ApiError, get, post, type ChatOp, type ViewSummary } from "../api";
+import { AppBar, Box, IconButton, Menu, MenuItem, Snackbar, Toolbar, Tooltip, Typography } from "@mui/material";
+import { Badge, Btn, ErrorBox, Loading, errMsg, viewStatus } from "../ui";
+import { ChatPanel } from "./ChatPanel";
 import { ElementPanel } from "./ElementPanel";
 import { RevisionsDrawer } from "./RevisionsDrawer";
+import { ViewSettingsDialog } from "./ViewSettingsDialog";
+import { publicViewUrl } from "@rdb/portal";
+import { ClientPreviewButton, CopyLinkButton, PREVIEW_BASE } from "../Preview";
 
 const DEFAULT_H: Record<ElementType, number> = { chart: 6, table: 6, kpi: 3, text: 2 };
 
@@ -29,7 +34,14 @@ export function ViewEditor() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<"save" | "publish" | null>(null);
   const [showRevisions, setShowRevisions] = useState(false);
-  const [addMenu, setAddMenu] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [addAnchor, setAddAnchor] = useState<HTMLElement | null>(null);
+
+  const [undoStack, setUndoStack] = useState<ViewSpec[]>([]); // spec before each of the last 10 AI responses
+  const [touched, setTouched] = useState<Record<string, number>>({}); // bumps remount the panel when chat edits an element
+  const specRef = useRef<ViewSpec | null>(null);
+  specRef.current = spec;
+  const lastTurn = useRef(0);
 
   const dirty = !!spec && fingerprint(spec) !== saved;
   const dirtyRef = useRef(dirty);
@@ -62,6 +74,7 @@ export function ViewEditor() {
       }
       setSpec(s);
       setSaved(fingerprint(s));
+      setUndoStack([]);
       setSelectedId(null);
       void loadData(s);
     } catch (e) {
@@ -91,6 +104,66 @@ export function ViewEditor() {
     if (result) setData((m) => ({ ...m, [el.id]: { status: "ok", data: result } }));
   };
 
+  /** Run an element's SQL through the validated /query path and show it on the canvas. */
+  async function fetchElementData(el: ViewElement) {
+    if (el.type === "text" || !el.sql.trim()) return;
+    setData((m) => ({ ...m, [el.id]: { status: "loading" } }));
+    try {
+      const d = await post<ElementData>(`${base}/query`, { sql: el.sql });
+      setData((m) => ({ ...m, [el.id]: { status: "ok", data: d } }));
+    } catch (err) {
+      setData((m) => ({ ...m, [el.id]: { status: "error", message: errMsg(err) } }));
+    }
+  }
+
+  /** Apply validated AI operations to the LOCAL draft only. Nothing is saved or published. */
+  function applyChatOps(ops: ChatOp[], turnId: number) {
+    const cur = specRef.current;
+    if (!cur) return;
+    if (lastTurn.current !== turnId) {
+      lastTurn.current = turnId;
+      setUndoStack((st) => [...st.slice(-9), cur]);
+    }
+    let next = cur;
+    const refetch: ViewElement[] = [];
+    for (const op of ops) {
+      if (op.op === "add_element") {
+        if (next.elements.some((e) => e.id === op.element.id)) continue;
+        next = { ...next, elements: [...next.elements, op.element], layout: [...next.layout, { element_id: op.element.id, ...op.layout }] };
+        refetch.push(op.element);
+        setTouched((t) => ({ ...t, [op.element.id]: (t[op.element.id] ?? 0) + 1 }));
+      } else if (op.op === "update_element") {
+        next = {
+          ...next,
+          elements: next.elements.map((e) => (e.id === op.element.id ? op.element : e)),
+          layout: op.layout ? next.layout.map((l) => (l.element_id === op.element.id ? { ...l, ...op.layout } : l)) : next.layout,
+        };
+        refetch.push(op.element);
+        setTouched((t) => ({ ...t, [op.element.id]: (t[op.element.id] ?? 0) + 1 }));
+      } else {
+        next = { ...next, elements: next.elements.filter((e) => e.id !== op.id), layout: next.layout.filter((l) => l.element_id !== op.id) };
+        setSelectedId((sel) => (sel === op.id ? null : sel));
+      }
+    }
+    specRef.current = next;
+    setSpec(next);
+    refetch.forEach((e) => void fetchElementData(e));
+  }
+
+  function undoAi() {
+    const prev = undoStack[undoStack.length - 1];
+    const cur = specRef.current;
+    if (!prev || !cur) return;
+    setUndoStack((st) => st.slice(0, -1));
+    specRef.current = prev;
+    setSpec(prev);
+    const before = new Map(cur.elements.map((e) => [e.id, e.sql]));
+    prev.elements.filter((e) => before.get(e.id) !== e.sql).forEach((e) => void fetchElementData(e));
+    const was = new Map(cur.elements.map((e) => [e.id, JSON.stringify(e)]));
+    setTouched((t) => ({ ...t, ...Object.fromEntries(prev.elements.filter((e) => was.get(e.id) !== JSON.stringify(e)).map((e) => [e.id, (t[e.id] ?? 0) + 1])) }));
+    setSelectedId((sel) => (sel && prev.elements.some((e) => e.id === sel) ? sel : null));
+  }
+
   function addElement(type: ElementType) {
     if (!spec) return;
     const n = Math.max(0, ...spec.elements.map((e) => Number(e.id.replace(/^el_/, "")) || 0)) + 1;
@@ -102,7 +175,7 @@ export function ViewEditor() {
     };
     setSpec({ ...spec, elements: [...spec.elements, el], layout: [...spec.layout, { element_id: id, x: 0, y, w: 12, h: DEFAULT_H[type] }] });
     setSelectedId(id);
-    setAddMenu(false);
+    setAddAnchor(null);
   }
 
   function removeFromView(id: string) {
@@ -143,62 +216,61 @@ export function ViewEditor() {
   const selectedLayout = spec?.layout.find((l) => l.element_id === selectedId) ?? null;
   const canPublish = !!meta && meta.draft_revision !== null && meta.has_unpublished_changes && !dirty && !busy;
 
-  if (!spec || !meta) return <div className="p-8">{error ? <ErrorBox error={error} /> : <span className="text-sm text-slate-500">Loading…</span>}</div>;
+  if (!spec || !meta) return <Box sx={{ p: 4 }}>{error ? <ErrorBox error={error} /> : <Loading />}</Box>;
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-5 py-3">
-        <h1 className="text-lg font-semibold">{meta.name}</h1>
-        {viewStatus(meta)}
-        {dirty && <Badge tone="blue">Unsaved edits</Badge>}
-        <div className="ml-auto flex items-center gap-2">
-          <Btn variant="secondary" onClick={() => setShowRevisions(true)}>Revisions</Btn>
-          <Btn variant="secondary" onClick={save} disabled={!!busy || !dirty}>{busy === "save" ? "Saving…" : "Save"}</Btn>
-          <Btn onClick={publish} disabled={!canPublish} title={dirty ? "Save your edits first" : !meta.has_unpublished_changes ? "Nothing to publish" : ""}>
-            {busy === "publish" ? "Publishing…" : "Publish"}
-          </Btn>
-        </div>
-      </header>
-      {(error || notice) && (
-        <div className="px-5 pt-3">
-          <ErrorBox error={error} />
-          {notice && <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">{notice}</div>}
-        </div>
-      )}
+    <Box sx={{ display: "flex", height: "100%", flexDirection: "column" }}>
+      <AppBar position="static">
+        <Toolbar sx={{ gap: 1.5, flexWrap: "wrap" }}>
+          <Typography variant="h6" component="h1" noWrap sx={{ minWidth: 0 }}>{meta.name}</Typography>
+          {viewStatus(meta)}
+          {dirty && <Badge tone="blue">Unsaved edits</Badge>}
+          <Tooltip title="View settings (name, description)">
+            <IconButton aria-label="View settings" size="small" onClick={() => setShowSettings(true)}>
+              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" /></svg>
+            </IconButton>
+          </Tooltip>
+          <Box sx={{ ml: "auto", display: "flex", alignItems: "center", gap: 1 }}>
+            <CopyLinkButton label="Copy client link" url={publicViewUrl(client, project, view)} />
+            <ClientPreviewButton to={`${PREVIEW_BASE}/c/${client}/p/${project}/v/${view}`} />
+            <Btn variant="ghost" onClick={() => setShowRevisions(true)}>Revisions</Btn>
+            <Btn variant="secondary" onClick={save} disabled={!!busy || !dirty}>{busy === "save" ? "Saving…" : "Save"}</Btn>
+            <Btn onClick={publish} disabled={!canPublish} title={dirty ? "Save your edits first" : !meta.has_unpublished_changes ? "Nothing to publish" : ""}>
+              {busy === "publish" ? "Publishing…" : "Publish"}
+            </Btn>
+          </Box>
+        </Toolbar>
+      </AppBar>
+      {error && <Box sx={{ px: 2.5, pt: 1.5 }}><ErrorBox error={error} onClose={() => setError(null)} /></Box>}
+      <Snackbar open={!!notice} autoHideDuration={4000} onClose={(_, reason) => reason !== "clickaway" && setNotice(null)}
+        message={notice} anchorOrigin={{ vertical: "bottom", horizontal: "center" }} />
 
-      <div className="flex min-h-0 flex-1">
-        <div className="relative flex min-w-0 flex-1 flex-col">
-          <div className="flex-1 overflow-auto p-5 pb-24">
-            <div className="mb-3 flex items-center gap-2">
-              <div className="relative">
-                <Btn variant="secondary" onClick={() => setAddMenu(!addMenu)}>+ Add element</Btn>
-                {addMenu && (
-                  <div className="absolute left-0 z-20 mt-1 w-36 rounded-md border border-slate-200 bg-white py-1 shadow-lg">
-                    {(["chart", "table", "kpi"] as const).map((t) => (
-                      <button key={t} onClick={() => addElement(t)} className="block w-full px-3 py-1.5 text-left text-sm capitalize hover:bg-slate-100">{t}</button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <span className="text-xs text-slate-400">Click an element to edit it.</span>
-            </div>
+      <Box sx={{ display: "flex", minHeight: 0, flex: 1 }}>
+        <Box sx={{ display: "flex", minWidth: 0, flex: 1, flexDirection: "column" }}>
+          <Box sx={{ flex: 1, overflow: "auto", p: 2.5 }}>
+            <Box sx={{ mb: 1.5, display: "flex", alignItems: "center", gap: 1.5 }}>
+              <Btn variant="secondary" onClick={(e) => setAddAnchor(e.currentTarget)} aria-haspopup="menu">+ Add element</Btn>
+              <Menu anchorEl={addAnchor} open={!!addAnchor} onClose={() => setAddAnchor(null)}>
+                {(["chart", "table", "kpi"] as const).map((t) => (
+                  <MenuItem key={t} onClick={() => addElement(t)} sx={{ textTransform: "capitalize", minWidth: 140 }}>{t}</MenuItem>
+                ))}
+              </Menu>
+              <Typography variant="caption" color="text.secondary">Click an element to edit it.</Typography>
+            </Box>
             {spec.elements.length === 0 ? (
-              <div className="rounded-lg border-2 border-dashed border-slate-300 p-16 text-center text-slate-400">
-                Empty view. Use “+ Add element” to start, or wait for AI chat in the next phase.
-              </div>
+              <Box sx={{ border: 2, borderStyle: "dashed", borderColor: "divider", borderRadius: "16px", p: 8, textAlign: "center", color: "text.secondary" }}>
+                Empty view. Ask the AI below for a chart, or use “+ Add element”.
+              </Box>
             ) : (
-              <SpecRenderer spec={spec} data={data} selectedId={selectedId} onSelect={setSelectedId} />
+              <SpecRenderer spec={spec} data={data} selectedId={selectedId} onSelect={setSelectedId} popVersions={touched} />
             )}
-          </div>
-          <div className="absolute inset-x-0 bottom-0 border-t border-slate-200 bg-white/95 p-3">
-            <input disabled placeholder="AI chat arrives in the next phase"
-              className="w-full cursor-not-allowed rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-sm text-slate-400" />
-          </div>
-        </div>
+          </Box>
+          <ChatPanel chatPath={`${viewPath}/chat`} getSpec={() => specRef.current as ViewSpec} onChanges={applyChatOps} onUndo={undoAi} undoCount={undoStack.length} />
+        </Box>
 
         {selected && (
           <ElementPanel
-            key={selected.id}
+            key={`${selected.id}:${touched[selected.id] ?? 0}`}
             element={selected}
             layout={selectedLayout}
             queryPath={`${base}/query`}
@@ -209,8 +281,17 @@ export function ViewEditor() {
             onClose={() => setSelectedId(null)}
           />
         )}
-      </div>
+      </Box>
 
+      {showSettings && (
+        <ViewSettingsDialog
+          viewPath={viewPath}
+          name={meta.name}
+          description={meta.description ?? ""}
+          onClose={() => setShowSettings(false)}
+          onSaved={(m) => { setMeta((cur) => (cur ? { ...cur, ...m } : cur)); setShowSettings(false); setNotice("View settings saved"); }}
+        />
+      )}
       {showRevisions && (
         <RevisionsDrawer
           viewPath={viewPath}
@@ -219,6 +300,6 @@ export function ViewEditor() {
           onRestored={async () => { setShowRevisions(false); await load(); setNotice("Restored as a new draft revision"); }}
         />
       )}
-    </div>
+    </Box>
   );
 }

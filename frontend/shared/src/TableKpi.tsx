@@ -1,6 +1,9 @@
 import { useMemo, useState } from "react";
 import { columnIsNumeric, formatDate, formatValue, toNumber, toTime } from "./format";
+import { T } from "./tokens";
 import type { ElementData } from "./spec";
+
+const empty = <div style={{ padding: 12, fontSize: 14, color: T.onSurfaceVariant }}>No data</div>;
 
 export function TableView({ data, format }: { data: ElementData; format: Record<string, string> }) {
   const [sort, setSort] = useState<{ idx: number; dir: 1 | -1 } | null>(null);
@@ -17,15 +20,15 @@ export function TableView({ data, format }: { data: ElementData; format: Record<
     });
   }, [data, sort, numeric]);
 
-  if (!data.columns.length) return <div className="p-3 text-sm text-slate-400">No data</div>;
+  if (!data.columns.length) return empty;
   return (
-    <div className="h-full overflow-auto">
-      <table className="min-w-full text-sm">
-        <thead className="sticky top-0 bg-slate-100">
+    <div style={{ height: "100%", overflow: "auto", fontFamily: T.font }}>
+      <table style={{ minWidth: "100%", fontSize: 13, borderCollapse: "collapse" }}>
+        <thead style={{ position: "sticky", top: 0, background: T.surfaceVariant }}>
           <tr>
             {data.columns.map((c, i) => (
               <th key={c} onClick={() => setSort((s) => (s?.idx === i ? { idx: i, dir: (s.dir * -1) as 1 | -1 } : { idx: i, dir: 1 }))}
-                className={`cursor-pointer select-none whitespace-nowrap px-3 py-1.5 font-medium text-slate-600 ${numeric[i] ? "text-right" : "text-left"}`}>
+                style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", padding: "8px 12px", fontWeight: 500, color: T.onSurfaceVariant, textAlign: numeric[i] ? "right" : "left" }}>
                 {c}{sort?.idx === i ? (sort.dir === 1 ? " ▲" : " ▼") : ""}
               </th>
             ))}
@@ -33,18 +36,18 @@ export function TableView({ data, format }: { data: ElementData; format: Record<
         </thead>
         <tbody>
           {rows.slice(0, 1000).map((r, ri) => (
-            <tr key={ri} className="border-t border-slate-100 hover:bg-slate-50">
+            <tr key={ri} className="rdb-row" style={{ borderTop: `1px solid ${T.outlineVariant}` }}>
               {r.map((v, ci) => {
                 const hint = format[data.columns[ci]];
                 const t = !numeric[ci] && typeof v === "string" ? toTime(v) : null;
                 const text = t !== null && v !== null && String(v).length > 10 ? formatDate(t, true) : t !== null ? formatDate(t) : formatValue(v, numeric[ci] ? hint ?? "number" : undefined);
-                return <td key={ci} className={`whitespace-nowrap px-3 py-1 ${numeric[ci] ? "text-right tabular-nums" : ""}`}>{text}</td>;
+                return <td key={ci} style={{ whiteSpace: "nowrap", padding: "6px 12px", textAlign: numeric[ci] ? "right" : "left", fontVariantNumeric: numeric[ci] ? "tabular-nums" : undefined }}>{text}</td>;
               })}
             </tr>
           ))}
         </tbody>
       </table>
-      {rows.length > 1000 && <div className="p-2 text-xs text-slate-400">Showing first 1,000 of {rows.length} rows</div>}
+      {rows.length > 1000 && <div style={{ padding: 8, fontSize: 12, color: T.onSurfaceVariant }}>Showing first 1,000 of {rows.length} rows</div>}
     </div>
   );
 }
@@ -52,15 +55,15 @@ export function TableView({ data, format }: { data: ElementData; format: Record<
 /** KPI: the first row; each column becomes one big number with its label. */
 export function KpiView({ data, format }: { data: ElementData; format: Record<string, string> }) {
   const row = data.rows[0];
-  if (!row) return <div className="p-3 text-sm text-slate-400">No data</div>;
+  if (!row) return empty;
   return (
-    <div className="flex h-full flex-wrap items-center justify-around gap-4 p-3">
+    <div style={{ display: "flex", height: "100%", flexWrap: "wrap", alignItems: "center", justifyContent: "space-around", gap: 16, padding: 12, fontFamily: T.font }}>
       {data.columns.slice(0, 6).map((c, i) => (
-        <div key={c} className="text-center">
-          <div className="text-3xl font-semibold tabular-nums text-slate-900">
+        <div key={c} style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 36, lineHeight: "44px", fontWeight: 400, fontVariantNumeric: "tabular-nums", color: T.primary }}>
             {formatValue(row[i], format[c] ?? (toNumber(row[i]) !== null ? "number" : undefined))}
           </div>
-          <div className="mt-1 text-xs uppercase tracking-wide text-slate-500">{c.replace(/_/g, " ")}</div>
+          <div style={{ marginTop: 4, fontSize: 12, lineHeight: "16px", fontWeight: 500, letterSpacing: 0.5, color: T.onSurfaceVariant }}>{c.replace(/_/g, " ")}</div>
         </div>
       ))}
     </div>

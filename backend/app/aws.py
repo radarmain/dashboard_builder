@@ -21,3 +21,13 @@ def ddb_table() -> Any:
 @lru_cache
 def s3() -> Any:
     return session().client("s3")
+
+
+@lru_cache
+def ddb_client() -> Any:
+    return session().client("dynamodb")
+
+
+@lru_cache
+def idp() -> Any:
+    return session().client("cognito-idp")

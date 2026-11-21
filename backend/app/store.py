@@ -7,13 +7,15 @@ from decimal import Decimal
 from typing import Any
 
 from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
 
-from app.aws import ddb_table, s3
+from app.aws import ddb_client, ddb_table, s3
 from app.config import get_settings
 from app.models import ProjectConfig, ViewSpec
 
 KEEP_REVISIONS = 10
+_SER = TypeSerializer()
 
 
 class Conflict(Exception):
@@ -140,7 +142,9 @@ def put_project_config(c: str, p: str, cfg: ProjectConfig) -> None:
 
 
 # ---------- views ----------
-def create_view(c: str, p: str, slug: str, name: str) -> dict[str, Any]:
+def create_view(
+    c: str, p: str, slug: str, name: str, description: str | None = None
+) -> dict[str, Any]:
     item = {
         "PK": f"CLIENT#{c}",
         "SK": f"VIEW#{p}#{slug}",
@@ -151,8 +155,42 @@ def create_view(c: str, p: str, slug: str, name: str) -> dict[str, Any]:
         "rev_counter": 0,
         "updated_at": now(),
     }
+    if description:
+        item["description"] = description
     _put_new(item)
     return item
+
+
+def update_view_meta(
+    c: str, p: str, v: str, name: str | None, description: str | None
+) -> dict[str, Any]:
+    """Name/description only; takes effect immediately. Empty description removes it."""
+    sets, removes, vals = ["updated_at = :t"], [], {":t": now()}
+    if name:
+        sets.append("#n = :n")
+        vals[":n"] = name
+    if description is not None:
+        if description:
+            sets.append("description = :d")
+            vals[":d"] = description
+        else:
+            removes.append("description")
+    expr = "SET " + ", ".join(sets) + (" REMOVE " + ", ".join(removes) if removes else "")
+    try:
+        extra: dict[str, Any] = {"ExpressionAttributeNames": {"#n": "name"}} if name else {}
+        r = ddb_table().update_item(
+            Key=_view_key(c, p, v),
+            UpdateExpression=expr,
+            ConditionExpression="attribute_exists(PK)",
+            ExpressionAttributeValues=vals,
+            ReturnValues="ALL_NEW",
+            **extra,
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise NotFound("view") from None
+        raise
+    return _plain(r["Attributes"])
 
 
 def get_view(c: str, p: str, v: str) -> dict[str, Any] | None:
@@ -255,7 +293,19 @@ def prune_revisions(c: str, p: str, v: str) -> list[int]:
     return doomed
 
 
-def publish(c: str, p: str, v: str, user: str) -> int:
+def summarize_spec(spec: dict[str, Any], published_at: str) -> dict[str, Any]:
+    """What a client-facing card shows about a published view. No SQL, no revision numbers."""
+    counts = {"chart": 0, "table": 0, "kpi": 0, "text": 0}
+    kinds: list[str] = []
+    for e in spec.get("elements", []):
+        counts[e["type"]] = counts.get(e["type"], 0) + 1
+        k = (e.get("chart") or {}).get("kind")
+        if e["type"] == "chart" and k and k not in kinds:
+            kinds.append(k)
+    return {"published_at": published_at, "counts": counts, "chart_kinds": kinds}
+
+
+def publish(c: str, p: str, v: str, user: str, spec: dict[str, Any] | None = None) -> int:
     item = get_view(c, p, v)
     if not item:
         raise NotFound("view")
@@ -263,16 +313,37 @@ def publish(c: str, p: str, v: str, user: str) -> int:
     if n is None:
         raise NotFound("draft")
     ts = now()
+    spec = spec or read_revision(c, p, v, int(n)) or {}
     s3_put_json(
         view_prefix(c, p, v) + "published.json",
         {"revision": n, "published_at": ts, "published_by": user},
     )
     ddb_table().update_item(
         Key=_view_key(c, p, v),
-        UpdateExpression="SET published_revision = :n, updated_at = :t",
-        ExpressionAttributeValues={":n": n, ":t": ts},
+        UpdateExpression="SET published_revision = :n, updated_at = :t, published_summary = :s",
+        ExpressionAttributeValues={":n": n, ":t": ts, ":s": summarize_spec(spec, ts)},
     )
     return int(n)
+
+
+def published_summary(item: dict[str, Any]) -> dict[str, Any] | None:
+    """The stored summary; views published before summaries existed are backfilled once."""
+    if item.get("published_revision") is None:
+        return None
+    if item.get("published_summary"):
+        return item["published_summary"]
+    c, p, v = item["client_slug"], item["project_slug"], item["slug"]
+    ptr = s3_get_json(f"{view_prefix(c, p, v)}published.json")
+    spec = read_revision(c, p, v, int(ptr["revision"])) if ptr else None
+    if not ptr or not spec:
+        return None
+    summary = summarize_spec(spec, ptr.get("published_at", item.get("updated_at", "")))
+    ddb_table().update_item(
+        Key=_view_key(c, p, v),
+        UpdateExpression="SET published_summary = :s",
+        ExpressionAttributeValues={":s": summary},
+    )
+    return summary
 
 
 # ---------- access ----------
@@ -281,11 +352,72 @@ def has_access(sub: str, client_slug: str) -> bool:
     return "Item" in r
 
 
-def grant_access(sub: str, client_slug: str) -> None:
-    ddb_table().put_item(
-        Item={"PK": f"USER#{sub}", "SK": f"CLIENT#{client_slug}", "created_at": now()}
+def list_access(sub: str) -> list[str]:
+    """Client slugs this user is assigned to."""
+    r = ddb_table().query(
+        KeyConditionExpression=Key("PK").eq(f"USER#{sub}") & Key("SK").begins_with("CLIENT#")
     )
+    return [i["SK"].split("#", 1)[1] for i in r["Items"]]
+
+
+def _typed(item: dict[str, Any]) -> dict[str, Any]:
+    return {k: _SER.serialize(v) for k, v in item.items()}
+
+
+def _tx(
+    puts: list[dict[str, Any]] | None = None, deletes: list[dict[str, str]] | None = None
+) -> None:
+    """All-or-nothing write of access items (one transaction)."""
+    table = get_settings().table_name
+    ops: list[dict[str, Any]] = [
+        {"Put": {"TableName": table, "Item": _typed(i)}} for i in puts or []
+    ]
+    ops += [{"Delete": {"TableName": table, "Key": _typed(k)}} for k in deletes or []]
+    ddb_client().transact_write_items(TransactItems=ops)
+
+
+def grant_access(sub: str, client_slug: str, email: str, added_by: str) -> bool:
+    """Write the access item AND its mirror together. False if the user already had access."""
+    if has_access(sub, client_slug):
+        return False
+    ts = now()
+    _tx(
+        puts=[
+            {"PK": f"USER#{sub}", "SK": f"CLIENT#{client_slug}", "created_at": ts},
+            {
+                "PK": f"CLIENT#{client_slug}",
+                "SK": f"USER#{sub}",
+                "email": email,
+                "added_by": added_by,
+                "added_at": ts,
+            },
+        ]
+    )
+    return True
 
 
 def revoke_access(sub: str, client_slug: str) -> None:
-    ddb_table().delete_item(Key={"PK": f"USER#{sub}", "SK": f"CLIENT#{client_slug}"})
+    """Remove the access item AND its mirror together (deleting absent items is fine)."""
+    _tx(
+        deletes=[
+            {"PK": f"USER#{sub}", "SK": f"CLIENT#{client_slug}"},
+            {"PK": f"CLIENT#{client_slug}", "SK": f"USER#{sub}"},
+        ]
+    )
+
+
+def list_client_users(client_slug: str) -> list[dict[str, Any]]:
+    """Mirror items for one client: {sub, email, added_by, added_at}."""
+    r = ddb_table().query(
+        KeyConditionExpression=Key("PK").eq(f"CLIENT#{client_slug}")
+        & Key("SK").begins_with("USER#")
+    )
+    return [
+        {
+            "sub": i["SK"].split("#", 1)[1],
+            "email": i.get("email", ""),
+            "added_by": i.get("added_by", ""),
+            "added_at": i.get("added_at", ""),
+        }
+        for i in r["Items"]
+    ]

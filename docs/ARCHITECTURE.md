@@ -51,6 +51,15 @@
 - Keep the last 10 revisions per view; prune older ones on save (only inside our own prefix).
 - See DATA_MODEL.md for keys.
 
+## Portal URL modes (frontend/portal/src/routes.ts)
+
+- **Host mode**: `https://<client>.radar-analytics.com` serves the Viewer. The client slug is the subdomain; paths are `/` (client home), `/:project`, `/:project/:view`. Used when `window.location.hostname` is `<label>.<VITE_BASE_DOMAIN>` (default `radar-analytics.com`) and `<label>` is not `builder` and not in the reserved list.
+- **Path mode** (everything else: localhost, `*.cloudfront.net`, Builder `/preview/*`): `/c/:client`, `/c/:client/p/:project`, `/c/:client/p/:project/v/:view`.
+- All links come from `routes.ts`; pages read client/project/view through `usePortalParams()`.
+- Unknown or reserved subdomains show the normal login page (a client's existence is never revealed before sign-in). After sign-in, an inaccessible client shows the generic not-found page (the portal API returns 404), with a link to the user's own client subdomain when they have exactly one.
+- Client slugs are subdomains: lowercase letters, digits, hyphens, max 40 chars, no leading/trailing hyphen, not in `backend/app/reserved_slugs.json` (the ONE reserved list; backend validates, Builder reads it from `GET /api/slug-rules`, portal imports the same JSON).
+- Edge: Builder distribution alias `builder.radar-analytics.com`, Viewer distribution alias `*.radar-analytics.com`, one ACM cert in us-east-1 (ARN in `infra/config.json`; empty = default domains only). SPA behaviors get the `rdb-security-headers` policy (HSTS max-age only, nosniff, DENY, strict-origin-when-cross-origin); `/api` behaviors do not. Cognito needs no changes (login happens in-app).
+
 ## Hosting and cost approach
 
 Serverless first. Smallest Fargate task size for the API. S3 + CloudFront for static apps. DynamoDB on-demand. No NAT gateway unless unavoidable (ask first). Prototype with CloudFront and load balancer default domains; custom domains and wildcard certs come later on request.

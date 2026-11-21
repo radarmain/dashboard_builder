@@ -4,9 +4,10 @@ Creates TEMPORARY Cognito users (random passwords, in memory only), runs the flo
 Prints summaries only: no tokens, no passwords, no row values.
 
 Usage: AWS_PROFILE=concrete AWS_REGION=us-east-2 \
-       .venv/bin/python scripts/smoke_test.py project.dataset.table
+       .venv/bin/python scripts/smoke_test.py project.dataset.table [--base-url https://xxxx.cloudfront.net]
 """
 
+import argparse
 import os
 import secrets
 import sys
@@ -18,15 +19,26 @@ import httpx
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
-API = os.environ.get("RDB_API", "http://localhost:8000")
+_ap = argparse.ArgumentParser()
+_ap.add_argument("fqn", help="project.dataset.table")
+_ap.add_argument("--base-url", default=os.environ.get("RDB_API", "http://localhost:8000"))
+_args = _ap.parse_args()
+API = _args.base_url.rstrip("/")
 POOL = os.environ["COGNITO_USER_POOL_ID"]
 APP = os.environ["COGNITO_APP_CLIENT_ID"]
-FQN = sys.argv[1]
+FQN = _args.fqn
 BQ_PROJECT, DATASET, TABLE = FQN.split(".")
 
 session = boto3.Session(profile_name="concrete", region_name="us-east-2")
 idp = session.client("cognito-idp")
 results: list[tuple[str, bool, str]] = []
+api_created: list[str] = []  # users created THROUGH the API: disabled (never deleted) at the end
+# User-management checks create real Cognito users, so they only run against a LOCAL API that was
+# started with RDB_SUPPRESS_INVITE_EMAILS=true (no invite emails). Skipped for --base-url deployments.
+RUN_USERS = (
+    API.startswith(("http://localhost", "http://127.0.0.1"))
+    and os.environ.get("RDB_SUPPRESS_INVITE_EMAILS", "").lower() == "true"
+)
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -67,11 +79,100 @@ def H(tok: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {tok}"}
 
 
+def user_mgmt_checks(
+    http: httpx.Client, admin: str, analyst: str, client: str, admin_sub: str
+) -> None:
+    tag = uuid.uuid4().hex[:6]
+    cu = f"rdb-smoke-uc-{tag}@example.invalid"
+    check(
+        "users: analyst cannot list admin users",
+        http.get("/api/admin/users", headers=H(analyst)).status_code == 403,
+    )
+    check(
+        "users: client cannot list client users",
+        http.get("/api/clients/rdb-test/users", headers=H(client)).status_code == 403,
+    )
+    r = http.post(
+        "/api/admin/users",
+        headers=H(analyst),
+        json={"email": f"x-{tag}@radar-analytics.com", "role": "analyst"},
+    )
+    check("users: analyst cannot create staff", r.status_code == 403)
+    r = http.post("/api/clients/rdb-test/users", headers=H(analyst), json={"email": cu.upper()})
+    ok = r.status_code == 201 and r.json()["status"] == "invited" and r.json()["email"] == cu
+    check("users: analyst adds client user (email normalized, invited)", ok, str(r.status_code))
+    if not ok:
+        return
+    sub = r.json()["sub"]
+    api_created.append(cu)
+    r = http.post("/api/clients/rdb-test/users", headers=H(analyst), json={"email": cu})
+    check(
+        "users: re-adding same email only re-grants (same sub)",
+        r.status_code == 201 and r.json()["sub"] == sub,
+    )
+    lst = http.get("/api/clients/rdb-test/users", headers=H(analyst)).json()
+    check("users: client users list has the new user", any(u["sub"] == sub for u in lst))
+    r = http.post(
+        "/api/clients/rdb-test/users", headers=H(analyst), json={"email": admin_email_of(admin_sub)}
+    )
+    check("users: staff email as client user -> 409", r.status_code == 409)
+    groups = [
+        g["GroupName"]
+        for g in idp.admin_list_groups_for_user(UserPoolId=POOL, Username=sub)["Groups"]
+    ]
+    check(
+        "users: new client user is in exactly one group (client)", groups == ["client"], str(groups)
+    )
+    r = http.post(f"/api/clients/rdb-test/users/{sub}/resend-invite", headers=H(client))
+    check("users: client cannot resend invites", r.status_code == 403)
+    r = http.delete(f"/api/clients/rdb-test/users/{sub}", headers=H(analyst))
+    still = idp.admin_get_user(UserPoolId=POOL, Username=sub)["Enabled"]
+    gone = not any(
+        u["sub"] == sub for u in http.get("/api/clients/rdb-test/users", headers=H(analyst)).json()
+    )
+    check("users: remove access keeps the Cognito account", r.status_code == 200 and gone and still)
+    r = http.post(
+        "/api/admin/users",
+        headers=H(admin),
+        json={"email": f"rdb-smoke-{tag}@gmail.com", "role": "analyst"},
+    )
+    check("users: staff outside allowed domains -> 400", r.status_code == 400)
+    st = f"rdb-smoke-staff-{tag}@radar-analytics.com"
+    r = http.post("/api/admin/users", headers=H(admin), json={"email": st, "role": "analyst"})
+    check("users: admin creates staff user", r.status_code == 201, str(r.status_code))
+    if r.status_code == 201:
+        api_created.append(st)
+        ssub = r.json()["sub"]
+        r = http.post(f"/api/admin/users/{ssub}/role", headers=H(admin), json={"role": "admin"})
+        groups = [
+            g["GroupName"]
+            for g in idp.admin_list_groups_for_user(UserPoolId=POOL, Username=ssub)["Groups"]
+        ]
+        check(
+            "users: role change leaves exactly one group",
+            r.status_code == 200 and groups == ["admin"],
+            str(groups),
+        )
+        r = http.post(f"/api/admin/users/{ssub}/disable", headers=H(admin))
+        check("users: disable works", r.status_code == 200 and r.json()["status"] == "disabled")
+    csub = http.get("/api/admin/users?role=client&search=" + cu, headers=H(admin)).json()
+    check("users: admin list/search finds client user", csub.get("total") == 1)
+    r = http.post(f"/api/admin/users/{admin_sub}/disable", headers=H(admin))
+    check("users: admin cannot disable themselves", r.status_code == 400)
+    r = http.post(f"/api/admin/users/{sub}/role", headers=H(admin), json={"role": "analyst"})
+    check("users: client user cannot become staff", r.status_code == 409)
+
+
+def admin_email_of(sub: str) -> str:
+    u = idp.list_users(UserPoolId=POOL, Filter=f'sub = "{sub}"', Limit=1)["Users"][0]
+    return next(a["Value"] for a in u["Attributes"] if a["Name"] == "email")
+
+
 def main() -> None:
     users: list[str] = []
     http = httpx.Client(base_url=API, timeout=180)
     try:
-        admin_email, _, admin = make_user("builder", ["admin", "analyst"])
+        admin_email, admin_sub, admin = make_user("builder", ["admin", "analyst"])
         users.append(admin_email)
         client_email, client_sub, client = make_user("client", ["client"])
         users.append(client_email)
@@ -103,6 +204,10 @@ def main() -> None:
         )
         check("layout wider than 12 columns rejected", r.status_code == 422)
         check("auth: no token -> 401", http.get("/api/clients").status_code == 401)
+        if RUN_USERS:
+            user_mgmt_checks(http, admin, analyst, client, admin_sub)
+        else:
+            print("SKIP user-management checks (local API + RDB_SUPPRESS_INVITE_EMAILS=true only)")
         check(
             "auth: client user blocked from builder route",
             http.get("/api/clients", headers=H(client)).status_code == 403,
@@ -324,6 +429,70 @@ def main() -> None:
             "/api/clients/some-other-client/projects/x/views/y/published", headers=H(client)
         )
         check("client: other client's view -> 404", r.status_code == 404)
+        # --- portal (client-facing) ---
+        PT = "/api/portal/clients/rdb-test"
+        r = http.patch(V, json={"description": "Smoke description"}, headers=H(admin))
+        check("PATCH view description", r.status_code == 200 and r.json().get("description"))
+        check(
+            "PATCH view: client forbidden",
+            http.patch(V, json={"name": "x"}, headers=H(client)).status_code == 403,
+        )
+        http.post(
+            f"{P}/views",
+            json={"name": "Smoke Draft", "slug": "smoke-draft"},
+            headers=H(admin),
+        )
+        http.post(
+            f"{P}/views/smoke-draft/save", json=spec, headers=H(admin)
+        )  # saved, never published
+        r = http.get(PT, headers=H(client))
+        cards = (
+            [v for p_ in r.json().get("projects", []) for v in p_["views"]] if r.is_success else []
+        )
+        slugs = {c["slug"] for c in cards}
+        check("portal: published view on card", "smoke-view" in slugs, str(sorted(slugs)))
+        check("portal: unpublished view absent", "smoke-draft" not in slugs)
+        card = next((c for c in cards if c["slug"] == "smoke-view"), {})
+        check(
+            "portal: description + summary on card",
+            card.get("description") == "Smoke description"
+            and card.get("counts", {}).get("kpi") == 1,
+            str({k: card.get(k) for k in ("counts", "chart_kinds")}),
+        )
+        check(
+            "portal: unpublished direct URL -> 404",
+            http.get(f"{PT}/projects/smoke/views/smoke-draft", headers=H(client)).status_code
+            == 404,
+        )
+        r = http.get(f"{PT}/projects/smoke/views/smoke-view", headers=H(client))
+        body = r.text.lower()
+        check(
+            "portal: view has no sql / revision",
+            r.status_code == 200 and '"sql"' not in body and "revision" not in body,
+        )
+        r = http.get(
+            f"{PT}/projects/smoke/views/smoke-view/data/el_1?draft=true", headers=H(client)
+        )
+        check(
+            "portal: data only columns/rows/truncated (?draft ignored)",
+            r.status_code == 200 and set(r.json()) == {"columns", "rows", "truncated"},
+            str(sorted(r.json())) if r.is_success else r.text[:200],
+        )
+        check(
+            "portal: unassigned client -> 404",
+            http.get("/api/portal/clients/some-other-client", headers=H(client)).status_code == 404,
+        )
+        r = http.get("/api/portal/me", headers=H(client))
+        check(
+            "portal/me: client sees assigned client", [c["slug"] for c in r.json()] == ["rdb-test"]
+        )
+        check("portal/me: admin gets []", http.get("/api/portal/me", headers=H(admin)).json() == [])
+        check(
+            "portal: admin can preview any client",
+            http.get(PT, headers=H(admin)).status_code == 200
+            and http.get(f"{PT}/projects/smoke/views/smoke-view", headers=H(analyst)).status_code
+            == 200,
+        )
         http.request(
             "DELETE",
             "/api/admin/access",
@@ -379,6 +548,15 @@ def main() -> None:
             except Exception as e:  # noqa: BLE001
                 print("cleanup failed for a temp user:", type(e).__name__)
         print(f"temp users deleted: {len(users)}")
+        for u in api_created:  # created via the API: disable, never delete
+            try:
+                idp.admin_disable_user(UserPoolId=POOL, Username=u)
+            except Exception as e:  # noqa: BLE001
+                print("could not disable an API-created test user:", type(e).__name__)
+        if api_created:
+            print(
+                f"API-created test users DISABLED (rdb-smoke-*, kept in the pool): {len(api_created)}"
+            )
     failed = [n for n, ok, _ in results if not ok]
     print(
         f"\n{len(results) - len(failed)}/{len(results)} passed"
