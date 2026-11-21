@@ -1,0 +1,5 @@
+{
+  "name": "rdb-frontend",
+  "private": true,
+  "workspaces": ["shared", "builder", "viewer"]
+}

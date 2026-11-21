@@ -1,0 +1,6 @@
+@import "tailwindcss";
+@source "../../shared/src";
+
+body {
+  @apply bg-slate-50 text-slate-800;
+}
