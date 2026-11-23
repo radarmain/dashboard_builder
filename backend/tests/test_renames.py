@@ -234,3 +234,65 @@ def test_big_project_moves_in_batches_and_resumes(fake: Fake) -> None:
     assert len(fake.query(f"CLIENT#{C}", "VIEW#huge#")) == 60
     assert not fake.query(f"CLIENT#{C}", "VIEW#big#")
     assert renames.resolve(C, "big", "v07") == ("huge", "v07")
+
+
+# ---------- Phase 9 data keyed by the project slug (Tableau link, imports, budget) ----------
+def test_rename_project_moves_tableau_link_import_report_and_budget(fake: Fake) -> None:
+    fake.add_project("main")
+    pre = store.project_prefix(C, "main")
+    keys = [  # project.json holds the Tableau link; imports/ holds plan, report, reference CSVs
+        "imports/abc/plan.json",
+        "imports/abc/report.json",
+        "imports/abc/reference/index.json",
+        "imports/abc/reference/0.csv",
+        "schemas/ds.tbl.json",
+    ]
+    for i, k in enumerate(keys):
+        fake.s3[pre + k] = 10 + i
+    budget = {
+        "PK": f"CLIENT#{C}",
+        "SK": "IMPORT#main#abc",
+        "scanned_bytes": 123456,
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+    fake.db[(budget["PK"], budget["SK"])] = dict(budget)
+
+    fake.fail_tx_at = 1  # first attempt fails: nothing changes, retry works (idempotent)
+    with pytest.raises(renames.RenameFailed):
+        renames.rename_project(C, "main", "reports", "s")
+    assert fake.get({"PK": f"CLIENT#{C}", "SK": "IMPORT#main#abc"})
+    renames.rename_project(C, "main", "reports", "s")
+
+    new_pre = store.project_prefix(C, "reports")
+    for k in ["project.json", *keys]:
+        assert new_pre + k in fake.s3, k
+    assert not fake.s3_list(pre)
+    moved = fake.get({"PK": f"CLIENT#{C}", "SK": "IMPORT#reports#abc"})
+    assert moved and moved["scanned_bytes"] == 123456  # budget carried over, not reset
+    assert fake.get({"PK": f"CLIENT#{C}", "SK": "IMPORT#main#abc"}) is None
+    assert renames.resolve(C, "main") == ("reports", None)
+
+
+def test_every_project_route_of_the_import_api_resolves_old_slugs() -> None:
+    """Old project slugs must keep working: each import route calls canon() before touching data."""
+    import ast
+    from pathlib import Path
+
+    import app.routes_tableau_import as mod
+
+    tree = ast.parse(Path(mod.__file__).read_text())
+    handlers = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef)
+        and n.decorator_list
+        and any(a.arg == "p" for a in n.args.args)
+    ]
+    assert len(handlers) >= 6
+    for fn in handlers:
+        calls = [
+            c.func.id
+            for c in ast.walk(fn)
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+        ]
+        assert "canon" in calls, f"{fn.name} does not resolve old project slugs"

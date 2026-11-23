@@ -14,7 +14,7 @@ from app import tableau_client as tc
 from app.auth import Builder
 from app.models import TableauLink, ViewSpec
 from app.routes_chat import _sse
-from app.routes_core import need_project
+from app.routes_core import canon, need_project
 from app.tableau_config import redact
 from app.tableau_import import imports_store as ist
 from app.tableau_import.agent import run_sheet, verify_sheet
@@ -27,6 +27,7 @@ BASE = "/clients/{c}/projects/{p}"
 
 @router.put(BASE + "/tableau-link")
 def put_link(c: str, p: str, body: TableauLink, user: Builder) -> dict[str, Any]:
+    p = canon(c, p)[0]
     need_project(c, p)
     cfg = store.get_project_config(c, p)
     cfg.tableau_link = body
@@ -37,6 +38,7 @@ def put_link(c: str, p: str, body: TableauLink, user: Builder) -> dict[str, Any]
 
 @router.get(BASE + "/tableau-link")
 def get_link(c: str, p: str, _: Builder) -> dict[str, Any] | None:
+    p = canon(c, p)[0]
     need_project(c, p)
     link = store.get_project_config(c, p).tableau_link
     return link.model_dump() if link else None
@@ -53,6 +55,7 @@ def _linked(c: str, p: str) -> TableauLink:
 @router.get(BASE + "/tableau-import/plan")
 def plan(c: str, p: str, user: Builder) -> dict[str, Any]:
     """Downloads the workbook (temp dir, deleted), returns the sanitized plan. No data."""
+    p = canon(c, p)[0]
     link = _linked(c, p)
     try:
         with tc.session() as s:
@@ -82,6 +85,7 @@ class RunIn(BaseModel):
 
 @router.post(BASE + "/tableau-import/sheets/{sheet_name}/run")
 def run(c: str, p: str, sheet_name: str, body: RunIn, user: Builder) -> StreamingResponse:
+    p = canon(c, p)[0]
     link = _linked(c, p)
     if not ist.IMPORT_ID.match(body.import_id):
         raise HTTPException(400, "invalid import id")
@@ -111,6 +115,7 @@ class VerifyIn(BaseModel):
 @router.post(BASE + "/tableau-import/sheets/{sheet_name}/verify")
 def verify(c: str, p: str, sheet_name: str, body: VerifyIn, user: Builder) -> StreamingResponse:
     """VERIFY mode (opt-in): one query within the byte budget, one comparison. No LLM."""
+    p = canon(c, p)[0]
     link = _linked(c, p)
     if not ist.IMPORT_ID.match(body.import_id):
         raise HTTPException(400, "invalid import id")
@@ -129,6 +134,7 @@ def verify(c: str, p: str, sheet_name: str, body: VerifyIn, user: Builder) -> St
 
 @router.get(BASE + "/tableau-import/{import_id}/report")
 def report(c: str, p: str, import_id: str, _: Builder) -> dict[str, Any]:
+    p = canon(c, p)[0]
     need_project(c, p)
     if not re.fullmatch(r"[0-9a-f]{32}", import_id):
         raise HTTPException(400, "invalid import id")

@@ -8,6 +8,7 @@ Usage: AWS_PROFILE=concrete AWS_REGION=us-east-2 \
 """
 
 import argparse
+import json
 import os
 import secrets
 import sys
@@ -328,6 +329,68 @@ def rename_checks(http: httpx.Client, admin: str, client: str, sql: str) -> None
     check("rename to another project's old slug -> 409", r.status_code == 409, r.text[:120])
     r = http.patch(f"{C}/projects/{p2}", json={"name": "Name only"}, headers=H(admin))
     check("rename project: name-only keeps slug", r.status_code == 200 and r.json()["slug"] == p2)
+
+
+def rename_import_checks(http: httpx.Client, admin: str) -> None:
+    """Rename a project that has a Tableau link, an import report + reference CSV (S3) and an
+    import budget item (DynamoDB). Everything must follow the new slug; the old slug still works.
+    The report/budget are seeded directly (running a real import would call Tableau and Bedrock)."""
+    tag = uuid.uuid4().hex[:6]
+    C = "/api/clients/rdb-test"
+    p0, p1 = f"imp-{tag}", f"imp-{tag}-renamed"
+    iid = uuid.uuid4().hex
+    table = session.resource("dynamodb").Table(os.environ.get("RDB_TABLE_NAME", "rdb_main"))
+    s3c = session.client("s3")
+    bucket = os.environ["RDB_DATA_BUCKET"]
+    pre = lambda p: f"clients/rdb-test/projects/{p}/imports/{iid}/"  # noqa: E731
+    r = http.post(f"{C}/projects", json={"name": f"Imp {tag}", "slug": p0}, headers=H(admin))
+    check("rename+import: create project", r.status_code == 201, str(r.status_code))
+    link = {"workbook_id": "0123abcd-4567-89ef-0123-456789abcdef", "workbook_name": "WB smoke"}
+    r = http.put(f"{C}/projects/{p0}/tableau-link", json=link, headers=H(admin))
+    check("rename+import: tableau link saved", r.status_code == 200, r.text[:120])
+    report = {"import_id": iid, "workbook": link, "sheets": {"Sheet 1": {"sheet": "Sheet 1"}}}
+    s3c.put_object(Bucket=bucket, Key=pre(p0) + "report.json", Body=json.dumps(report).encode())
+    s3c.put_object(Bucket=bucket, Key=pre(p0) + "reference/0.csv", Body=b"a,b\n1,2\n")
+    table.put_item(
+        Item={"PK": "CLIENT#rdb-test", "SK": f"IMPORT#{p0}#{iid}", "scanned_bytes": 4242}
+    )
+    r = http.get(f"{C}/projects/{p0}/tableau-import/{iid}/report", headers=H(admin))
+    check("rename+import: report readable before rename", r.status_code == 200, str(r.status_code))
+    r = http.patch(f"{C}/projects/{p0}", json={"slug": p1}, headers=H(admin))
+    check("rename+import: project renamed", r.status_code == 200, r.text[:120])
+    P1 = f"{C}/projects/{p1}"
+    r = http.get(f"{P1}/tableau-link", headers=H(admin))
+    check("rename+import: link under new slug", r.status_code == 200 and r.json() == link)
+    r = http.get(f"{P1}/tableau-import/{iid}/report", headers=H(admin))
+    ok = r.status_code == 200 and r.json().get("import_id") == iid
+    check("rename+import: report under new slug", ok, str(r.status_code))
+    keys = {
+        o["Key"] for o in s3c.list_objects_v2(Bucket=bucket, Prefix=pre(p1)).get("Contents", [])
+    }
+    check(
+        "rename+import: reference CSV moved",
+        keys == {pre(p1) + "report.json", pre(p1) + "reference/0.csv"},
+        str(sorted(keys)),
+    )
+    new_item = table.get_item(
+        Key={"PK": "CLIENT#rdb-test", "SK": f"IMPORT#{p1}#{iid}"}, ConsistentRead=True
+    ).get("Item")
+    check(
+        "rename+import: budget item re-keyed with its bytes",
+        bool(new_item) and int(new_item["scanned_bytes"]) == 4242,
+    )
+    old_item = table.get_item(
+        Key={"PK": "CLIENT#rdb-test", "SK": f"IMPORT#{p0}#{iid}"}, ConsistentRead=True
+    ).get("Item")
+    check("rename+import: old budget item gone", old_item is None)
+    r = http.get(f"{C}/projects/{p0}/tableau-link", headers=H(admin))
+    check("rename+import: OLD slug resolves the link", r.status_code == 200 and r.json() == link)
+    r = http.get(f"{C}/projects/{p0}/tableau-import/{iid}/report", headers=H(admin))
+    check("rename+import: OLD slug resolves the report", r.status_code == 200, str(r.status_code))
+    # tidy the seeded test data (our own objects)
+    for k in keys:
+        s3c.delete_object(Bucket=bucket, Key=k)
+    table.delete_item(Key={"PK": "CLIENT#rdb-test", "SK": f"IMPORT#{p1}#{iid}"})
 
 
 def admin_email_of(sub: str) -> str:
@@ -661,6 +724,7 @@ def main() -> None:
             == 200,
         )
         rename_checks(http, admin, client, sql)
+        rename_import_checks(http, admin)
         http.request(
             "DELETE",
             "/api/admin/access",
