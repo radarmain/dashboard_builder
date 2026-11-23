@@ -109,3 +109,5 @@ export AWS_PROFILE=concrete AWS_REGION=us-east-2 AWS_DEFAULT_REGION=us-east-2
 npx cdk synth
 npx cdk diff
 ```
+
+Gemini check (read-only, tiny cost; lists models, one text call, 6 Decisions calls): `.venv/bin/python scripts/gemini_check.py`. Design: `docs/LLM_PROVIDERS.md`.
