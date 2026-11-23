@@ -132,6 +132,23 @@ def list_projects(c: str) -> list[dict[str, Any]]:
     return r["Items"]
 
 
+def update_project_name(c: str, p: str, name: str) -> dict[str, Any]:
+    try:
+        r = ddb_table().update_item(
+            Key={"PK": f"CLIENT#{c}", "SK": f"PROJECT#{p}"},
+            UpdateExpression="SET #n = :n",
+            ConditionExpression="attribute_exists(PK)",
+            ExpressionAttributeNames={"#n": "name"},
+            ExpressionAttributeValues={":n": name},
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise NotFound("project") from None
+        raise
+    return r["Attributes"]
+
+
 def get_project_config(c: str, p: str) -> ProjectConfig:
     data = s3_get_json(project_prefix(c, p) + "project.json")
     return ProjectConfig(**data) if data else ProjectConfig()

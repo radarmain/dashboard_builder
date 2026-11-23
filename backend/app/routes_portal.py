@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 from app import store
 from app.auth import ClientAccess, CurrentUser
 from app.query_runner import QueryFailed, QueryRejected, run_query
-from app.routes_core import need_client, need_project
+from app.routes_core import canon, need_client, need_project
 
 router = APIRouter(prefix="/api/portal")
 
@@ -84,6 +84,7 @@ def portal_client(client_slug: str, _: ClientAccess) -> dict[str, Any]:
 
 @router.get("/clients/{client_slug}/projects/{p}")
 def portal_project(client_slug: str, p: str, _: ClientAccess) -> dict[str, Any]:
+    p = canon(client_slug, p)[0]
     client = need_client(client_slug)
     project = need_project(client_slug, p)
     return {"client": _client_ref(client), "project": _project_cards(client_slug, project)}
@@ -91,6 +92,7 @@ def portal_project(client_slug: str, p: str, _: ClientAccess) -> dict[str, Any]:
 
 @router.get("/clients/{client_slug}/projects/{p}/views/{v}")
 def portal_view(client_slug: str, p: str, v: str, _: ClientAccess) -> dict[str, Any]:
+    p, v = canon(client_slug, p, v)
     client = need_client(client_slug)
     project = need_project(client_slug, p)
     item, spec, ptr = _published(client_slug, p, v)
@@ -107,6 +109,7 @@ def portal_view(client_slug: str, p: str, v: str, _: ClientAccess) -> dict[str, 
     return {
         "client": _client_ref(client),
         "project": {"slug": project["slug"], "name": project["name"]},
+        "slug": item["slug"],  # canonical; the page replaces the URL when it differs
         "name": item["name"],
         "description": item.get("description") or None,
         "published_at": ptr.get("published_at"),
@@ -120,6 +123,7 @@ def portal_data(
     client_slug: str, p: str, v: str, element_id: str, _: ClientAccess
 ) -> dict[str, Any]:
     """Runs the PUBLISHED element's saved SQL via the validated runner. No ?draft here."""
+    p, v = canon(client_slug, p, v)
     need_client(client_slug)
     _, spec, _ptr = _published(client_slug, p, v)
     el = next((e for e in spec.get("elements", []) if e["id"] == element_id), None)

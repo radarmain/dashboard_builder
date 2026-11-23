@@ -4,12 +4,13 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from app import cognito, store
+from app import cognito, renames, store
 from app.auth import Admin, Builder, ClientAccess, CurrentUser
 from app.models import (
     AccessGrant,
     ClientCreate,
     ProjectCreate,
+    ProjectPatch,
     ViewCreate,
     ViewPatch,
     ViewSpec,
@@ -24,6 +25,13 @@ HIDDEN = {"PK", "SK", "rev_counter"}
 
 def clean(item: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in item.items() if k not in HIDDEN}
+
+
+def canon(c: str, p: str, v: str | None = None) -> tuple[str, str]:
+    """Canonical (project, view) slugs; old slugs resolve through aliases (renames.py).
+    Call after authorization. Unknown slugs come back unchanged (-> 404 as before)."""
+    p2, v2 = renames.resolve(c, p, v)
+    return p2, v2 or ""
 
 
 def need_client(c: str) -> dict[str, Any]:
@@ -94,14 +102,34 @@ def list_projects(c: str, _: Builder) -> list[dict[str, Any]]:
 @router.post("/clients/{c}/projects", status_code=201)
 def create_project(c: str, body: ProjectCreate, _: Builder) -> dict[str, Any]:
     need_client(c)
+    if not renames.project_slug_free(c, body.slug):
+        raise HTTPException(409, "project slug already exists (or is an old link of a project)")
     try:
         return clean(store.create_project(c, body.slug, body.name))
     except store.Conflict:
         raise HTTPException(409, "project slug already exists") from None
 
 
+@router.patch("/clients/{c}/projects/{p}")
+def patch_project(c: str, p: str, body: ProjectPatch, user: Builder) -> dict[str, Any]:
+    p = canon(c, p)[0]
+    item = need_project(c, p)
+    try:
+        if body.slug and body.slug != p:
+            item = renames.rename_project(c, p, body.slug, user.sub)
+            p = body.slug
+        if body.name:
+            item = store.update_project_name(c, p, body.name)
+    except renames.SlugConflict as e:
+        raise HTTPException(409, str(e)) from None
+    except renames.RenameFailed as e:
+        raise HTTPException(503, str(e)) from None
+    return clean(item)
+
+
 @router.get("/clients/{c}/projects/{p}")
 def get_project(c: str, p: str, _: Builder) -> dict[str, Any]:
+    p = canon(c, p)[0]
     item = clean(need_project(c, p))
     item["config"] = store.get_project_config(c, p).model_dump()
     return item
@@ -110,13 +138,17 @@ def get_project(c: str, p: str, _: Builder) -> dict[str, Any]:
 # ---------- views ----------
 @router.get("/clients/{c}/projects/{p}/views")
 def list_views(c: str, p: str, _: Builder) -> list[dict[str, Any]]:
+    p = canon(c, p)[0]
     need_project(c, p)
     return [clean(store.view_public(i)) for i in store.list_views(c, p)]
 
 
 @router.post("/clients/{c}/projects/{p}/views", status_code=201)
 def create_view(c: str, p: str, body: ViewCreate, _: Builder) -> dict[str, Any]:
+    p = canon(c, p)[0]
     need_project(c, p)
+    if not renames.view_slug_free(c, p, body.slug):
+        raise HTTPException(409, "view slug already exists (or is an old link of a view)")
     try:
         item = store.create_view(c, p, body.slug, body.name, body.description)
         return clean(store.view_public(item))
@@ -126,19 +158,33 @@ def create_view(c: str, p: str, body: ViewCreate, _: Builder) -> dict[str, Any]:
 
 @router.get("/clients/{c}/projects/{p}/views/{v}")
 def get_view(c: str, p: str, v: str, _: Builder) -> dict[str, Any]:
+    p, v = canon(c, p, v)
     return clean(store.view_public(need_view(c, p, v)))
 
 
 @router.patch("/clients/{c}/projects/{p}/views/{v}")
-def patch_view(c: str, p: str, v: str, body: ViewPatch, _: Builder) -> dict[str, Any]:
+def patch_view(c: str, p: str, v: str, body: ViewPatch, user: Builder) -> dict[str, Any]:
+    p, v = canon(c, p, v)
     need_view(c, p, v)
-    item = store.update_view_meta(c, p, v, body.name, body.description)
+    try:
+        if body.slug and body.slug != v:
+            renames.rename_view(c, p, v, body.slug, user.sub)
+            v = body.slug
+    except renames.SlugConflict as e:
+        raise HTTPException(409, str(e)) from None
+    except renames.RenameFailed as e:
+        raise HTTPException(503, str(e)) from None
+    if body.name or body.description is not None:
+        item = store.update_view_meta(c, p, v, body.name, body.description)
+    else:  # slug-only change: don't touch updated_at
+        item = need_view(c, p, v)
     return clean(store.view_public(item))
 
 
 # ---------- save / draft / publish / revisions ----------
 @router.post("/clients/{c}/projects/{p}/views/{v}/save")
 def save_view(c: str, p: str, v: str, spec: ViewSpec, user: Builder) -> dict[str, Any]:
+    p, v = canon(c, p, v)
     need_view(c, p, v)
     n = store.write_revision(c, p, v, spec, user.email or user.sub)
     return {"revision": n, "draft_revision": n}
@@ -146,16 +192,18 @@ def save_view(c: str, p: str, v: str, spec: ViewSpec, user: Builder) -> dict[str
 
 @router.get("/clients/{c}/projects/{p}/views/{v}/draft")
 def get_draft(c: str, p: str, v: str, _: Builder) -> dict[str, Any]:
+    p, v = canon(c, p, v)
     item = need_view(c, p, v)
     n = item.get("draft_revision")
     spec = store.read_revision(c, p, v, n) if n is not None else None
     if not spec:
         raise HTTPException(404, "no draft")
-    return spec
+    return {**spec, "view": {**spec.get("view", {}), "slug": v}}
 
 
 @router.get("/clients/{client_slug}/projects/{p}/views/{v}/published")
 def get_published(client_slug: str, p: str, v: str, user: ClientAccess) -> dict[str, Any]:
+    p, v = canon(client_slug, p, v)
     spec = load_published(client_slug, p, v)
     return spec if user.is_builder else strip_sql(spec)
 
@@ -166,11 +214,13 @@ def load_published(c: str, p: str, v: str) -> dict[str, Any]:
     spec = store.read_revision(c, p, v, ptr["revision"]) if ptr else None
     if not spec:
         raise HTTPException(404, "not published")
-    return spec
+    # canonical slug, not the one saved inside an old revision
+    return {**spec, "view": {**spec.get("view", {}), "slug": v}}
 
 
 @router.post("/clients/{c}/projects/{p}/views/{v}/publish")
 def publish_view(c: str, p: str, v: str, user: Builder) -> dict[str, Any]:
+    p, v = canon(c, p, v)
     item = need_view(c, p, v)
     n = item.get("draft_revision")
     spec = store.read_revision(c, p, v, n) if n is not None else None
@@ -188,6 +238,7 @@ def publish_view(c: str, p: str, v: str, user: Builder) -> dict[str, Any]:
 
 @router.get("/clients/{c}/projects/{p}/views/{v}/revisions")
 def list_revisions(c: str, p: str, v: str, _: Builder) -> list[dict[str, Any]]:
+    p, v = canon(c, p, v)
     item = need_view(c, p, v)
     out = []
     for n in store.list_revision_numbers(c, p, v)[: store.KEEP_REVISIONS]:
@@ -206,6 +257,7 @@ def list_revisions(c: str, p: str, v: str, _: Builder) -> list[dict[str, Any]]:
 
 @router.post("/clients/{c}/projects/{p}/views/{v}/revisions/{n}/restore")
 def restore_revision(c: str, p: str, v: str, n: int, user: Builder) -> dict[str, Any]:
+    p, v = canon(c, p, v)
     need_view(c, p, v)
     old = store.read_revision(c, p, v, n)
     if not old:

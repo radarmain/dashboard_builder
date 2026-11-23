@@ -10,7 +10,7 @@ from app.auth import Builder, ClientAccess
 from app.config import get_settings
 from app.models import ProjectConfig, ProjectSettingsIn, QueryIn
 from app.query_runner import QueryFailed, QueryRejected, run_query
-from app.routes_core import load_published, need_project, need_view
+from app.routes_core import canon, load_published, need_project, need_view
 from app.sql_validation import SqlValidationError, validate_allowlist_entry
 
 router = APIRouter(prefix="/api")
@@ -62,6 +62,7 @@ def schema_key(c: str, p: str, dataset: str, table: str) -> str:
 
 @router.put("/clients/{c}/projects/{p}/settings")
 def put_settings(c: str, p: str, body: ProjectSettingsIn, _: Builder) -> dict[str, Any]:
+    p = canon(c, p)[0]
     need_project(c, p)
     _ident(body.bq_project)
     if not body.tables:
@@ -110,6 +111,7 @@ def put_settings(c: str, p: str, body: ProjectSettingsIn, _: Builder) -> dict[st
 
 @router.get("/clients/{c}/projects/{p}/settings")
 def get_settings_route(c: str, p: str, _: Builder) -> dict[str, Any]:
+    p = canon(c, p)[0]
     need_project(c, p)
     cfg = store.get_project_config(c, p).model_dump()
     cfg["default_max_bytes_billed"] = get_settings().default_max_bytes_billed
@@ -129,11 +131,13 @@ def _snapshot(c: str, p: str, dt: str) -> tuple[str, dict[str, Any]]:
 
 @router.get("/clients/{c}/projects/{p}/schemas/{dt}")
 def get_schema(c: str, p: str, dt: str, _: Builder) -> dict[str, Any]:
+    p = canon(c, p)[0]
     return _snapshot(c, p, dt)[1]
 
 
 @router.put("/clients/{c}/projects/{p}/schemas/{dt}/descriptions")
 def put_descriptions(c: str, p: str, dt: str, body: dict[str, str], _: Builder) -> dict[str, Any]:
+    p = canon(c, p)[0]
     key, snap = _snapshot(c, p, dt)
     cols = {col["name"] for col in snap["columns"]}
     unknown = sorted(set(body) - cols)
@@ -157,6 +161,7 @@ def _run(c: str, p: str, sql: str, *, refresh: bool, ttl: int | None) -> dict[st
 
 @router.post("/clients/{c}/projects/{p}/query")
 def query(c: str, p: str, body: QueryIn, _: Builder) -> dict[str, Any]:
+    p = canon(c, p)[0]
     need_project(c, p)
     return _run(c, p, body.sql, refresh=body.refresh, ttl=None)
 
@@ -166,6 +171,7 @@ def element_data(
     client_slug: str, p: str, v: str, element_id: str, user: ClientAccess, draft: bool = False
 ) -> dict[str, Any]:
     c = client_slug
+    p, v = canon(c, p, v)
     # ClientAccess (authorization) has already run before anything below touches the cache.
     if draft:
         if not user.is_builder:

@@ -18,6 +18,11 @@ Slug = Annotated[
     StringConstraints(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$", min_length=1, max_length=63),
 ]
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+# Project/view slugs when RENAMING (creation keeps the looser 63 for existing data).
+ChildSlug = Annotated[
+    str,
+    StringConstraints(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$", min_length=1, max_length=40),
+]
 
 
 # ---------- entities ----------
@@ -60,10 +65,17 @@ class ViewCreate(BaseModel):
 
 
 class ViewPatch(BaseModel):
-    """Metadata only (not in the revision spec); applies immediately. Slug is immutable."""
+    """Metadata only (not in the revision spec); applies immediately. A new slug moves the view
+    (renames.py) and keeps the old link working through an alias."""
 
     name: Name | None = None
     description: Description | None = None
+    slug: ChildSlug | None = None
+
+
+class ProjectPatch(BaseModel):
+    name: Name | None = None
+    slug: ChildSlug | None = None
 
 
 class View(ViewCreate):
