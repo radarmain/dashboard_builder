@@ -11,3 +11,6 @@ cdk.out/
 !.env.example
 .DS_Store
 *.log
+
+# Tableau inventory dumps (may contain client names / field names)
+.local/

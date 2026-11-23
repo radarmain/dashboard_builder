@@ -120,8 +120,9 @@ export function buildTheme(t: Tokens = lightTokens): Theme {
       MuiButton: {
         defaultProps: { disableElevation: true },
         styleOverrides: {
-          root: { borderRadius: shape.full, padding: "6px 20px", minHeight: 40, "&.Mui-focusVisible": focusRing },
-          sizeSmall: { minHeight: 32, padding: "4px 14px" },
+          root: { borderRadius: shape.full, padding: "4px 16px", minHeight: 34, fontSize: "0.8125rem", "&.Mui-focusVisible": focusRing },
+          sizeSmall: { minHeight: 28, padding: "2px 12px", fontSize: "0.75rem" },
+          sizeLarge: { minHeight: 44, padding: "8px 24px", fontSize: "0.875rem" },
           outlined: { borderColor: t.outline },
         },
         variants: [
@@ -131,7 +132,7 @@ export function buildTheme(t: Tokens = lightTokens): Theme {
           },
           {
             props: { variant: "text" },
-            style: { paddingInline: 12 },
+            style: { paddingInline: 10 },
           },
           {
             props: { variant: "tonal" },
@@ -197,7 +198,7 @@ export function buildTheme(t: Tokens = lightTokens): Theme {
       MuiListItemButton: {
         styleOverrides: {
           root: {
-            borderRadius: shape.full, minHeight: 48, paddingInline: 20, flexGrow: 0, flexShrink: 0,
+            borderRadius: shape.full, minHeight: 32, paddingBlock: 2, paddingInline: 14, flexGrow: 0, flexShrink: 0,
             "&.Mui-selected": { backgroundColor: t.secondaryContainer, color: t.onSecondaryContainer, "&:hover": { backgroundColor: t.secondaryContainer } },
             "&.Mui-focusVisible": focusRing,
           },

@@ -22,4 +22,6 @@ Work one phase at a time. After each phase, report what works and how to run it,
 
 **Phase 8: Domains.** (DONE; waiting on the Cloudflare records in `docs/DNS_RECORDS.md`, then Step 6 verification.) DNS is on Cloudflare (we only print records). ACM wildcard `*.radar-analytics.com` via `scripts/request_cert.py` (ARN in `infra/config.json`), CloudFront aliases `builder.radar-analytics.com` and `*.radar-analytics.com`, security-headers policy, client-slug rules (`backend/app/slugs.py` + `reserved_slugs.json`), host-based portal routing (`frontend/portal/src/routes.ts`), Copy client link in the Builder.
 
+**Phase 5.5: Tableau token-expiry alert + read-only inventory.** (DONE, deployed; secret `rdb_tableau` created, deployed status call confirmed) `backend/app/tableau_{config,client}.py` (plain REST + Metadata GraphQL, read-only guard, single-session lock), admin-only `GET /api/alerts` + non-dismissible Builder banner (token expiry <=30d warning, <=7d critical; runtime auth failure marker), `GET /api/tableau/{status,projects,workbooks,workbooks/{id}}` (builder only, 5-min cache), `scripts/tableau_inventory.py`, `scripts/create_tableau_secret.py`. No Tableau-to-dashboard import yet.
+
 **Out of scope until asked:** automated Tableau import, CPA integration, review workflows, drag-and-drop layout, extensive testing, visual testing.

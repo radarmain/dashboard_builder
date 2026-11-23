@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Box, Link, Typography } from "@mui/material";
 import { CardSkeletons, ViewCard, cardGridSx } from "./ViewCard";
-import { PortalBreadcrumbs, useDocTitle, useReportClient } from "./PortalShell";
+import { PortalBreadcrumbs, useDocTitle, useHideClientName, useReportClient } from "./PortalShell";
 import { portalApi, rememberClient, useFetched, type ProjectCards } from "./api";
 import { publicClientUrl } from "./routes";
 import { usePortal, usePortalParams } from "./context";
@@ -22,6 +22,7 @@ function useOwnClientUrl(): string | null {
 
 export function NotFound({ title = "We couldn't find that page", body = "It may have moved, or it isn't available to you." }: { title?: string; body?: string }) {
   const own = useOwnClientUrl();
+  useHideClientName(); // access isn't established: header shows the RADaR logo only
   return (
     <Box sx={{ py: 8, textAlign: "center" }}>
       <Typography variant="h5" sx={{ mb: 1 }}>{title}</Typography>

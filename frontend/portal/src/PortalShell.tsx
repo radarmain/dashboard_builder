@@ -8,8 +8,8 @@ import { clientNameOf } from "./api";
 /** Height of the Builder's preview header; the portal sits below it and its app bar sticks under it. */
 export const PREVIEW_BAR_HEIGHT = 32;
 
-interface ShellCtx { setClientName: (slug: string, name: string) => void }
-const Ctx = createContext<ShellCtx>({ setClientName: () => {} });
+interface ShellCtx { setClientName: (slug: string, name: string) => void; setHideName: (hide: boolean) => void }
+const Ctx = createContext<ShellCtx>({ setClientName: () => {}, setHideName: () => {} });
 
 /** Pages call this once their data arrives so the app bar can show the client name. */
 export function useReportClient(slug: string, name: string | undefined) {
@@ -17,6 +17,15 @@ export function useReportClient(slug: string, name: string | undefined) {
   useEffect(() => {
     if (name) setClientName(slug, name);
   }, [slug, name, setClientName]);
+}
+
+/** Pages where access isn't established (e.g. not found) call this so the bar shows only the logo. */
+export function useHideClientName() {
+  const { setHideName } = useContext(Ctx);
+  useEffect(() => {
+    setHideName(true);
+    return () => setHideName(false);
+  }, [setHideName]);
 }
 
 /** Sets "<title> · RADaR" style document titles and restores the previous one on unmount. */
@@ -52,8 +61,10 @@ export function PortalShell() {
   const { preview, links } = usePortal();
   const { client } = usePortalParams();
   const [names, setNames] = useState<Record<string, string>>({});
-  const ctx = useMemo<ShellCtx>(() => ({ setClientName: (s, n) => setNames((m) => (m[s] === n ? m : { ...m, [s]: n })) }), []);
-  const clientName = (client && (names[client] ?? clientNameOf(client))) || "";
+  const [hideName, setHideName] = useState(false);
+  const [logoFailed, setLogoFailed] = useState(false);
+  const ctx = useMemo<ShellCtx>(() => ({ setClientName: (s, n) => setNames((m) => (m[s] === n ? m : { ...m, [s]: n })), setHideName }), []);
+  const clientName = (!hideName && client && (names[client] ?? clientNameOf(client))) || "";
 
   return (
     <Ctx.Provider value={ctx}>
@@ -61,7 +72,11 @@ export function PortalShell() {
         <AppBar position="sticky" sx={{ top: preview ? PREVIEW_BAR_HEIGHT : 0 }}>
           <Toolbar sx={{ gap: 2, minHeight: { xs: 56, sm: 64 } }}>
             <Box component={RouterLink} to={client ? links.client(client) : links.home} aria-label="RADaR home" sx={{ display: "flex", flexShrink: 0 }}>
-              <Box component="img" src={LOGO} alt="RADaR" sx={{ height: 32, width: "auto", display: "block" }} />
+              {logoFailed ? (
+                <Typography variant="h6" component="span" sx={{ color: "text.primary" }}>RADaR</Typography>
+              ) : (
+                <Box component="img" src={LOGO} alt="RADaR" onError={() => setLogoFailed(true)} sx={{ height: 32, width: "auto", display: "block" }} />
+              )}
             </Box>
             {clientName && (
               <Typography variant="subtitle1" noWrap sx={{ color: "text.secondary", borderLeft: 1, borderColor: "divider", pl: 2, minWidth: 0 }}>

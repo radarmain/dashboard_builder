@@ -19,4 +19,5 @@ def test_bad_client_slugs(slug: str) -> None:
 
 
 def test_reserved_list_complete() -> None:
-    assert len(RESERVED_SLUGS) == 51 and {"api", "ns1", "gh-mail", "preview"} <= RESERVED_SLUGS
+    assert len(RESERVED_SLUGS) == 52
+    assert {"api", "ns1", "gh-mail", "preview", "notify"} <= RESERVED_SLUGS

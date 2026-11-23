@@ -59,6 +59,8 @@ scripts/deploy.sh --yes    # no prompt (what GitHub Actions runs)
 Stack `rdb-app`: Lambda container API (`rdb-api`, arm64, Web Adapter, streaming Function URL), two private S3 buckets behind CloudFront
 (Builder, Viewer) with same-origin `/api`, and the `rdb-github-deploy` role. URLs are printed at the end and are stack outputs
 (`BuilderUrl`, `ViewerUrl`). Local dev and the deployed app share the same table/bucket/user pool.
+Tableau (read-only): `AWS_PROFILE=concrete .venv/bin/python scripts/tableau_inventory.py` prints an inventory summary of the Tableau Cloud site and writes the full dump to `.local/tableau_inventory/` (gitignored). `scripts/create_tableau_secret.py` copies the `.env` Tableau values into the `rdb_tableau` secret (refuses to overwrite without `--force`).
+
 Post-deploy checks: `curl <url>/health`, `scripts/smoke_test.py project.dataset.table --base-url <builder-url>`,
 `scripts/chat_test.py CLIENT PROJECT VIEW "msg" --temp-user --base-url <builder-url>` (prints time to first event).
 

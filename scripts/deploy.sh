@@ -68,6 +68,7 @@ fi
 export VITE_COGNITO_USER_POOL_ID="$(out rdb-core UserPoolId)"
 export VITE_COGNITO_APP_CLIENT_ID="$(out rdb-core AppClientId)"
 export VITE_AWS_REGION="$AWS_REGION"
+export VITE_VIEWER_URL="$(out rdb-app ViewerUrl)"  # Builder gate links clients here when not on the custom domain
 unset VITE_API_URL
 [[ -n "$VITE_COGNITO_USER_POOL_ID" && -n "$VITE_COGNITO_APP_CLIENT_ID" ]] \
   || { echo "rdb-core outputs not found; is the stack deployed?" >&2; exit 1; }

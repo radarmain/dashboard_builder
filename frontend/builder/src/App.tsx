@@ -2,6 +2,7 @@ import { Typography } from "@mui/material";
 import { AuthProvider, RequireAuth, isBuilder } from "@rdb/core";
 import { portalRoutes } from "@rdb/portal";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { ClientDashboards } from "./ClientDashboards";
 import { Layout } from "./Layout";
 import { AdminSettingsPage } from "./pages/AdminSettings";
 import { ClientPage, ClientsPage } from "./pages/Clients";
@@ -16,7 +17,12 @@ export default function App() {
         appName="Dashboard Builder"
         allow={isBuilder}
         deniedTitle="This app is for analysts"
-        deniedBody="Your account doesn't have builder access. Client dashboards are available in the Viewer."
+        deniedBody={(id) =>
+          id.groups.includes("client")
+            ? "This is the RADaR analyst tool."
+            : "Your account doesn't have builder access."
+        }
+        deniedExtra={(id) => (id.groups.includes("client") ? <ClientDashboards /> : null)}
       >
         <BrowserRouter>
           <Routes>

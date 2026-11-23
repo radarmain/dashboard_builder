@@ -57,11 +57,14 @@ export interface RequireAuthProps {
   /** Who may use this app. Others see `deniedTitle` / `deniedBody` and a Sign out button. */
   allow: (id: Identity) => boolean;
   deniedTitle: string;
-  deniedBody: string;
+  /** String, or a function of the identity when the copy depends on the user. */
+  deniedBody: string | ((id: Identity) => string);
+  /** Extra content under the denied message (e.g. links); get the identity. */
+  deniedExtra?: (id: Identity) => ReactNode;
 }
 
 /** Gate: login -> (new password) -> allow check -> children. */
-export function RequireAuth({ children, appName, allow, deniedTitle, deniedBody }: RequireAuthProps) {
+export function RequireAuth({ children, appName, allow, deniedTitle, deniedBody, deniedExtra }: RequireAuthProps) {
   const { status, identity, signOut } = useAuth();
   if (status === "loading") return <Centered><Loading /></Centered>;
   if (status === "out" || !identity) return <Login appName={appName} />;
@@ -72,8 +75,9 @@ export function RequireAuth({ children, appName, allow, deniedTitle, deniedBody 
           <Logo />
           <Typography variant="h5">{deniedTitle}</Typography>
           <Typography variant="body2" color="text.secondary">
-            Signed in as {identity.email}. {deniedBody}
+            Signed in as {identity.email}. {typeof deniedBody === "function" ? deniedBody(identity) : deniedBody}
           </Typography>
+          {deniedExtra?.(identity)}
           <Box><Btn variant="secondary" onClick={signOut}>Sign out</Btn></Box>
         </Card>
       </Centered>

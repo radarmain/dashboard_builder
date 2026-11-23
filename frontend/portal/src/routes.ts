@@ -60,6 +60,17 @@ export function portalPatterns(basePath: string, hostClient?: string | null) {
   };
 }
 
+/**
+ * Where a client user should go from another app (e.g. the Builder's access-denied screen).
+ * On the custom domain: https://<slug>.<BASE_DOMAIN>. On localhost / *.cloudfront.net: path-mode
+ * link on the Viewer origin (VITE_VIEWER_URL; localhost defaults to the dev Viewer on :5174).
+ */
+export function viewerClientUrl(slug: string, hostname: string = window.location.hostname): string {
+  if (hostname === BASE_DOMAIN || hostname.endsWith(`.${BASE_DOMAIN}`)) return publicClientUrl(slug);
+  const origin = (import.meta.env.VITE_VIEWER_URL || (hostname === "localhost" ? "http://localhost:5174" : "")).replace(/\/+$/, "");
+  return `${origin}${portalLinks("").client(slug)}`;
+}
+
 /** Public (client-facing) URLs on the custom domain, e.g. for "Copy client link". */
 export const publicClientUrl = (slug: string, baseDomain: string = BASE_DOMAIN) => `https://${slug}.${baseDomain}`;
 export const publicViewUrl = (slug: string, project: string, view: string, baseDomain: string = BASE_DOMAIN) =>
