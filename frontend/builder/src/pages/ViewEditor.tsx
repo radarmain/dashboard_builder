@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { SpecRenderer, type DataMap, type ElementData, type ElementType, type ViewElement, type ViewSpec } from "@rdb/shared";
 import { ApiError, get, post, type ChatOp, type ViewSummary } from "../api";
 import { AppBar, Box, IconButton, Menu, MenuItem, Snackbar, Toolbar, Tooltip, Typography } from "@mui/material";
@@ -22,6 +22,7 @@ const fingerprint = (s: ViewSpec) => JSON.stringify({ n: s.view.name, l: s.layou
 
 export function ViewEditor() {
   const { client = "", project = "", view = "" } = useParams();
+  const navigate = useNavigate();
   const base = `/clients/${client}/projects/${project}`;
   const viewPath = `${base}/views/${view}`;
 
@@ -64,6 +65,10 @@ export function ViewEditor() {
     setError(null);
     try {
       const m = await get<ViewSummary>(viewPath);
+      if (m.project_slug !== project || m.slug !== view) { // reached via an old link: swap in the canonical URL
+        navigate(`/c/${client}/p/${m.project_slug}/v/${m.slug}`, { replace: true });
+        return;
+      }
       setMeta(m);
       let s: ViewSpec;
       try {
@@ -80,9 +85,12 @@ export function ViewEditor() {
     } catch (e) {
       setError(errMsg(e));
     }
-  }, [viewPath, loadData]);
+  }, [viewPath, loadData, client, project, view, navigate]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (meta) document.title = `${meta.name} · RADaR Dashboard Builder`;
+  }, [meta?.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Warn before leaving with unsaved changes (tab close/reload + in-app links).
   useEffect(() => {
@@ -225,14 +233,14 @@ export function ViewEditor() {
           <Typography variant="h6" component="h1" noWrap sx={{ minWidth: 0 }}>{meta.name}</Typography>
           {viewStatus(meta)}
           {dirty && <Badge tone="blue">Unsaved edits</Badge>}
-          <Tooltip title="View settings (name, description)">
+          <Tooltip title="View settings (name, URL, description)">
             <IconButton aria-label="View settings" size="small" onClick={() => setShowSettings(true)}>
               <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" /></svg>
             </IconButton>
           </Tooltip>
           <Box sx={{ ml: "auto", display: "flex", alignItems: "center", gap: 1 }}>
-            <CopyLinkButton label="Copy client link" url={publicViewUrl(client, project, view)} />
-            <ClientPreviewButton to={`${PREVIEW_BASE}/c/${client}/p/${project}/v/${view}`} />
+            <CopyLinkButton label="Copy client link" url={publicViewUrl(client, meta.project_slug, meta.slug)} />
+            <ClientPreviewButton to={`${PREVIEW_BASE}/c/${client}/p/${meta.project_slug}/v/${meta.slug}`} />
             <Btn variant="ghost" onClick={() => setShowRevisions(true)}>Revisions</Btn>
             <Btn variant="secondary" onClick={save} disabled={!!busy || !dirty}>{busy === "save" ? "Saving…" : "Save"}</Btn>
             <Btn onClick={publish} disabled={!canPublish} title={dirty ? "Save your edits first" : !meta.has_unpublished_changes ? "Nothing to publish" : ""}>
@@ -287,9 +295,21 @@ export function ViewEditor() {
         <ViewSettingsDialog
           viewPath={viewPath}
           name={meta.name}
+          slug={meta.slug}
+          dirty={dirty}
           description={meta.description ?? ""}
           onClose={() => setShowSettings(false)}
-          onSaved={(m) => { setMeta((cur) => (cur ? { ...cur, ...m } : cur)); setShowSettings(false); setNotice("View settings saved"); }}
+          onSaved={(m) => {
+            setShowSettings(false);
+            if (m.slug && m.slug !== view) { // renamed: move to the new route, sidebar cache is invalidated by the PATCH
+              setMeta((cur) => (cur ? { ...cur, ...m } : cur));
+              navigate(`/c/${client}/p/${m.project_slug ?? project}/v/${m.slug}`, { replace: true });
+              setNotice("View URL updated. The old link keeps working.");
+            } else {
+              setMeta((cur) => (cur ? { ...cur, ...m } : cur));
+              setNotice("View settings saved");
+            }
+          }}
         />
       )}
       {showRevisions && (

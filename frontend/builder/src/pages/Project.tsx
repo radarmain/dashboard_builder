@@ -6,20 +6,26 @@ import { Btn, ErrorBox, Loading, PageHeader, errMsg, monoSx, viewStatus } from "
 import { ClientPreviewButton, PREVIEW_BASE } from "../Preview";
 import { LinkCard, NameSlugForm } from "./Clients";
 import { Settings } from "./Settings";
+import { ProjectGeneral } from "./ProjectGeneral";
 
 type TabId = "settings" | "builder";
 
 export function ProjectPage() {
   const { client = "", project = "" } = useParams();
+  const navigate = useNavigate();
   const [info, setInfo] = useState<Project | null>(null);
   const [tab, setTab] = useState<TabId | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     get<Project>(`/clients/${client}/projects/${project}`)
-      .then((p) => { setInfo(p); setTab((t) => t ?? (p.config?.tables.length ? "builder" : "settings")); })
+      .then((p) => {
+        if (p.slug !== project) { navigate(`/c/${client}/p/${p.slug}`, { replace: true }); return; } // old link -> canonical
+        setInfo(p); setTab((t) => t ?? (p.config?.tables.length ? "builder" : "settings"));
+      })
       .catch((e) => setError(errMsg(e)));
-  }, [client, project]);
+  }, [client, project, navigate]);
+  useEffect(() => { if (info?.name) document.title = `${info.name} · RADaR Dashboard Builder`; }, [info?.name]);
 
   return (
     <Box sx={{ p: 4 }}>
@@ -31,6 +37,10 @@ export function ProjectPage() {
         <Tab value="settings" label="Settings" />
         <Tab value="builder" label="Builder" />
       </Tabs>
+      {tab === "settings" && info && (
+        <ProjectGeneral client={client} project={project} name={info.name}
+          onRenamed={(p) => { setInfo((cur) => (cur ? { ...cur, name: p.name, slug: p.slug } : cur)); if (p.slug !== project) navigate(`/c/${client}/p/${p.slug}`, { replace: true }); }} />
+      )}
       {tab === "settings" && (
         <Settings client={client} project={project} initial={info?.config ?? null}
           onSaved={(cfg) => setInfo((p) => (p ? { ...p, config: cfg } : p))} />

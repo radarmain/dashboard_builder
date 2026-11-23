@@ -1,6 +1,13 @@
-import { API_BASE, ApiError, detailText, getIdToken, notifyUnauthorized } from "@rdb/core";
+import { API_BASE, ApiError, detailText, getIdToken, notifyUnauthorized, del as coreDel, patch as corePatch, post as corePost, put as corePut } from "@rdb/core";
+import { invalidateForMutation } from "./navTree";
 
-export { ApiError, del, get, post, put, patch } from "@rdb/core";
+export { ApiError, get } from "@rdb/core";
+
+// Mutations refresh the sidebar tree (navTree.ts decides which cache entries are stale).
+export const post = async <T,>(p: string, b?: unknown) => { const r = await corePost<T>(p, b); invalidateForMutation("POST", p); return r; };
+export const put = async <T,>(p: string, b: unknown) => { const r = await corePut<T>(p, b); invalidateForMutation("PUT", p); return r; };
+export const patch = async <T,>(p: string, b: unknown) => { const r = await corePatch<T>(p, b); invalidateForMutation("PATCH", p); return r; };
+export const del = async <T,>(p: string) => { const r = await coreDel<T>(p); invalidateForMutation("DELETE", p); return r; };
 
 // ---- API types (mirror backend responses) ----
 export interface Client { slug: string; name: string; created_at: string; created_by: string }

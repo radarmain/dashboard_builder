@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Box, Typography } from "@mui/material";
 import { SpecRenderer, type DataMap, type ViewElement, type ViewSpec } from "@rdb/shared";
 import { NotFound } from "./Pages";
@@ -24,6 +25,10 @@ export function ViewPage() {
   const { links } = usePortal();
   const f = useFetched(`view:${client}/${project}/${view}`, () => portalApi.view(client, project, view));
   const v = f.data;
+  const navigate = useNavigate();
+  useEffect(() => { // reached via an old (aliased) link: swap in the canonical URL
+    if (v && (v.project.slug !== project || v.slug !== view)) navigate(links.view(client, v.project.slug, v.slug), { replace: true });
+  }, [v, client, project, view, links, navigate]);
   if (v) rememberClient(v.client);
   useReportClient(client, v?.client.name);
   useDocTitle(v?.name, v?.client.name);

@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 import { Box, Link, Typography } from "@mui/material";
 import { CardSkeletons, ViewCard, cardGridSx } from "./ViewCard";
 import { PortalBreadcrumbs, useDocTitle, useHideClientName, useReportClient } from "./PortalShell";
@@ -81,6 +82,11 @@ export function ProjectPage() {
   const { client, project } = usePortalParams();
   const { links } = usePortal();
   const f = useFetched(`project:${client}/${project}`, () => portalApi.project(client, project));
+  const navigate = useNavigate();
+  const canonical = f.data?.project.slug;
+  useEffect(() => { // old (aliased) project link -> canonical URL
+    if (canonical && canonical !== project) navigate(links.project(client, canonical), { replace: true });
+  }, [canonical, client, project, links, navigate]);
   if (f.data) rememberClient(f.data.client);
   useReportClient(client, f.data?.client.name);
   useDocTitle(f.data?.project.name, f.data?.client.name);
