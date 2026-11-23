@@ -112,6 +112,7 @@ class RdbAppStack(Stack):
                 "RDB_GBQ_SECRET_NAME": SECRET_NAME,
                 "RDB_GBQ_SECRET_KEY": SECRET_KEY,
                 "RDB_TABLEAU_SECRET_NAME": "rdb_tableau",
+                "RDB_GEMINI_SECRET_NAME": "rdb_gemini",
                 "BQ_DEFAULT_MAX_BYTES_BILLED": "10000000000",
                 "RDB_CHAT_MAX_BYTES_BILLED": "2000000000",
             },

@@ -20,6 +20,7 @@ from aws_cdk import (
 from constructs import Construct
 
 TABLEAU_SECRET_NAME = "rdb_tableau"  # our own secret; created by scripts/create_tableau_secret.py
+GEMINI_SECRET_NAME = "rdb_gemini"  # our own secret; created by scripts/create_gemini_secret.py
 SECRET_NAME = "GBQ_lambda_secrets"  # existing secret; referenced by name only, never modified
 BEDROCK_PROFILE = "us.anthropic.claude-sonnet-5-5"
 
@@ -139,6 +140,20 @@ class RdbCoreStack(Stack):
                         service="secretsmanager",
                         resource="secret",
                         resource_name=f"{TABLEAU_SECRET_NAME}-??????",
+                        arn_format=ArnFormat.COLON_RESOURCE_NAME,
+                    )
+                ],
+            )
+        )
+        # Read-only access to OUR Gemini secret (GetSecretValue only, that one secret).
+        api_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[
+                    self.format_arn(
+                        service="secretsmanager",
+                        resource="secret",
+                        resource_name=f"{GEMINI_SECRET_NAME}-??????",
                         arn_format=ArnFormat.COLON_RESOURCE_NAME,
                     )
                 ],
