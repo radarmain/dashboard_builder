@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 import pytest
-from app import routes_portal, store
+from app import renames, routes_portal, store
 from app.auth import User, current_user
 from app.main import app
 from fastapi.testclient import TestClient
@@ -67,6 +67,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     }
     projects = {"main": {"slug": "main", "name": "Main", "client_slug": "acme"}}
     s = monkeypatch.setattr
+    s(renames, "_get_item", lambda key: None)  # no aliases
     s(store, "get_client", lambda c: clients.get(c))
     s(store, "get_project", lambda c, p: projects.get(p) if c == "acme" else None)
     s(store, "list_projects", lambda c: list(projects.values()) if c == "acme" else [])

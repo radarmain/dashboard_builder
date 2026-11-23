@@ -17,7 +17,7 @@ from app.chat_tools import ToolContext
 from app.config import get_settings
 from app.models import ViewSpec
 from app.query_runner import run_query
-from app.routes_core import need_view
+from app.routes_core import canon, need_view
 from app.routes_gbq import schema_key
 
 router = APIRouter(prefix="/api")
@@ -101,6 +101,7 @@ def _events(c: str, p: str, name: str, body: ChatIn) -> Iterator[dict[str, Any]]
 
 @router.post("/clients/{c}/projects/{p}/views/{v}/chat")
 def chat(c: str, p: str, v: str, body: ChatIn, _: Builder) -> StreamingResponse:
+    p, v = canon(c, p, v)
     item = need_view(c, p, v)
     return StreamingResponse(
         _sse(_events(c, p, item.get("name", v), body)),

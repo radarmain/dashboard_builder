@@ -163,6 +163,173 @@ def user_mgmt_checks(
     check("users: client user cannot become staff", r.status_code == 409)
 
 
+def rename_checks(http: httpx.Client, admin: str, client: str, sql: str) -> None:
+    """Project/view slug renames + aliases. New temp project per run (data is left in place)."""
+    tag = uuid.uuid4().hex[:6]
+    C = "/api/clients/rdb-test"
+    PTL = "/api/portal/clients/rdb-test"
+    p0, p1, p2 = f"ren-{tag}", f"ren-{tag}-renamed", f"ren-{tag}-two"
+    v0, v1, vo = f"orig-{tag}", f"orig-{tag}-new", f"other-{tag}"
+    for slug in (p0, p2):
+        r = http.post(f"{C}/projects", json={"name": f"Ren {slug}", "slug": slug}, headers=H(admin))
+        check(f"rename: create project {slug}", r.status_code == 201, str(r.status_code))
+        r = http.put(
+            f"{C}/projects/{slug}/settings",
+            json={"bq_project": BQ_PROJECT, "tables": [FQN]},
+            headers=H(admin),
+        )
+        check(f"rename: connect table on {slug}", r.status_code == 200, r.text[:150])
+    for slug in (v0, vo):
+        http.post(f"{C}/projects/{p0}/views", json={"name": slug, "slug": slug}, headers=H(admin))
+    spec = {
+        "view": {"name": "Ren", "slug": v0},
+        "layout": [{"element_id": "el_1", "x": 0, "y": 0, "w": 12, "h": 6}],
+        "elements": [
+            {"id": "el_1", "type": "kpi", "title": "n", "sql": sql, "cache_ttl_seconds": 3600}
+        ],
+    }
+    V0 = f"{C}/projects/{p0}/views/{v0}"
+    r1 = http.post(f"{V0}/save", json=spec, headers=H(admin))
+    r2 = http.post(f"{V0}/publish", headers=H(admin))
+    check("rename: saved + published rev 1", r1.status_code == 200 and r2.status_code == 200)
+
+    # ---- view slug ----
+    r = http.patch(V0, json={"slug": "Bad_Slug"}, headers=H(admin))
+    check("rename view: bad slug -> 422", r.status_code == 422)
+    r = http.patch(V0, json={"slug": "x" * 41}, headers=H(admin))
+    check("rename view: >40 chars -> 422", r.status_code == 422)
+    r = http.patch(V0, json={"slug": v1}, headers=H(client))
+    check("rename view: client user forbidden", r.status_code == 403)
+    r = http.patch(V0, json={"slug": vo}, headers=H(admin))
+    check("rename view: existing slug -> 409", r.status_code == 409, r.text[:120])
+    r = http.patch(V0, json={"slug": v1, "name": "Renamed"}, headers=H(admin))
+    ok = r.status_code == 200 and r.json()["slug"] == v1 and r.json()["name"] == "Renamed"
+    check("rename view: slug + name", ok, r.text[:150])
+    V1 = f"{C}/projects/{p0}/views/{v1}"
+    r = http.get(V1, headers=H(admin))
+    j = r.json() if r.is_success else {}
+    check(
+        "rename view: pointers kept",
+        j.get("draft_revision") == 1 and j.get("published_revision") == 1,
+        str({k: j.get(k) for k in ("draft_revision", "published_revision")}),
+    )
+    r = http.get(f"{V1}/published", headers=H(admin))
+    check(
+        "rename view: new slug serves published spec",
+        r.status_code == 200 and r.json()["revision"] == 1 and r.json()["view"]["slug"] == v1,
+    )
+    r = http.get(f"{V1}/revisions", headers=H(admin))
+    revs = r.json() if r.is_success else []
+    check(
+        "rename view: revisions moved",
+        any(x["revision"] == 1 and x["is_published"] for x in revs),
+        str([x["revision"] for x in revs]),
+    )
+    r = http.post(f"{V1}/save", json=spec, headers=H(admin))
+    check("rename view: revision counter continues", r.json().get("revision") == 2, r.text[:100])
+    r = http.get(f"{V1}", headers=H(admin))
+    check(
+        "rename view: save keeps published pointer",
+        r.json().get("published_revision") == 1 and r.json().get("draft_revision") == 2,
+    )
+    # old slug still resolves (builder + portal + data), canonical slugs in the body
+    r = http.get(V0, headers=H(admin))
+    check("old view slug: builder GET resolves", r.status_code == 200 and r.json()["slug"] == v1)
+    r = http.get(f"{V0}/published", headers=H(admin))
+    check("old view slug: published spec", r.status_code == 200 and r.json()["revision"] == 1)
+    r = http.get(f"{V0}/data/el_1", headers=H(admin))
+    check("old view slug: builder data route", r.status_code == 200 and r.json().get("columns"))
+    r = http.get(f"{PTL}/projects/{p0}/views/{v0}", headers=H(client))
+    j = r.json() if r.is_success else {}
+    check(
+        "old view slug: portal view (client) + canonical slug",
+        r.status_code == 200 and j.get("slug") == v1 and j["project"]["slug"] == p0,
+        str(r.status_code),
+    )
+    r = http.get(f"{PTL}/projects/{p0}/views/{v0}/data/el_1", headers=H(client))
+    check("old view slug: portal data route", r.status_code == 200 and r.json().get("columns"))
+    r = http.post(f"{C}/projects/{p0}/views", json={"name": "x", "slug": v0}, headers=H(admin))
+    check("create view on an old slug -> 409", r.status_code == 409)
+    r = http.patch(f"{C}/projects/{p0}/views/{vo}", json={"slug": v0}, headers=H(admin))
+    check("rename to another view's old slug -> 409", r.status_code == 409, r.text[:120])
+
+    # ---- project slug ----
+    P0 = f"{C}/projects/{p0}"
+    r = http.patch(P0, json={"slug": p2}, headers=H(admin))
+    check(
+        "rename project: slug owned by another project -> 409", r.status_code == 409, r.text[:120]
+    )
+    r = http.patch(P0, json={"slug": "Bad_Slug"}, headers=H(admin))
+    check("rename project: bad slug -> 422", r.status_code == 422)
+    r = http.patch(P0, json={"slug": p1}, headers=H(client))
+    check("rename project: client user forbidden", r.status_code == 403)
+    r = http.patch(P0, json={"slug": p1, "name": "Ren renamed"}, headers=H(admin))
+    ok = r.status_code == 200 and r.json()["slug"] == p1 and r.json()["name"] == "Ren renamed"
+    check("rename project: slug + name", ok, r.text[:150])
+    P1 = f"{C}/projects/{p1}"
+    r = http.get(P1, headers=H(admin))
+    check(
+        "rename project: config moved",
+        r.status_code == 200 and r.json()["config"]["tables"] == [FQN],
+    )
+    r = http.get(f"{P1}/views", headers=H(admin))
+    slugs = sorted(v["slug"] for v in r.json()) if r.is_success else []
+    check("rename project: views re-keyed", slugs == sorted([v1, vo]), str(slugs))
+    r = http.get(f"{P1}/views/{v1}", headers=H(admin))
+    j = r.json() if r.is_success else {}
+    check(
+        "rename project: view pointers + project_slug",
+        j.get("project_slug") == p1
+        and j.get("published_revision") == 1
+        and j.get("draft_revision") == 2,
+    )
+    r = http.post(f"{P1}/views/{v1}/save", json=spec, headers=H(admin))
+    check("rename project: revision counter continues", r.json().get("revision") == 3)
+    r = http.get(f"{P1}/views/{v1}/data/el_1", headers=H(admin))
+    check(
+        "rename project: data route on new slugs", r.status_code == 200 and r.json().get("columns")
+    )
+    # fully old path (old project + old view) still works everywhere
+    old_view = f"{P0}/views/{v0}"
+    r = http.get(old_view, headers=H(admin))
+    j = r.json() if r.is_success else {}
+    check(
+        "old project+view slugs: builder GET -> canonical",
+        j.get("slug") == v1 and j.get("project_slug") == p1,
+        str(r.status_code),
+    )
+    r = http.get(f"{P0}", headers=H(admin))
+    check(
+        "old project slug: builder GET -> canonical",
+        r.status_code == 200 and r.json()["slug"] == p1,
+    )
+    r = http.get(f"{PTL}/projects/{p0}/views/{v0}", headers=H(client))
+    j = r.json() if r.is_success else {}
+    check(
+        "old project+view slugs: client reads published view via OLD portal path",
+        r.status_code == 200 and j["project"]["slug"] == p1 and j["slug"] == v1,
+        str(r.status_code),
+    )
+    r = http.get(f"{PTL}/projects/{p0}/views/{v0}/data/el_1", headers=H(client))
+    check(
+        "old project+view slugs: portal data route",
+        r.status_code == 200 and r.json().get("columns"),
+    )
+    r = http.get(f"{PTL}/projects/{p0}", headers=H(client))
+    check(
+        "old project slug: portal project page -> canonical",
+        r.status_code == 200 and r.json()["project"]["slug"] == p1,
+    )
+    r = http.get(f"{old_view}/data/el_1?draft=true", headers=H(client))
+    check("old slugs: client still cannot use ?draft", r.status_code == 403)
+    r = http.post(f"{C}/projects", json={"name": "x", "slug": p0}, headers=H(admin))
+    check("create project on an old slug -> 409", r.status_code == 409)
+    r = http.patch(f"{C}/projects/{p2}", json={"slug": p0}, headers=H(admin))
+    check("rename to another project's old slug -> 409", r.status_code == 409, r.text[:120])
+    r = http.patch(f"{C}/projects/{p2}", json={"name": "Name only"}, headers=H(admin))
+    check("rename project: name-only keeps slug", r.status_code == 200 and r.json()["slug"] == p2)
+
+
 def admin_email_of(sub: str) -> str:
     u = idp.list_users(UserPoolId=POOL, Filter=f'sub = "{sub}"', Limit=1)["Users"][0]
     return next(a["Value"] for a in u["Attributes"] if a["Name"] == "email")
@@ -493,6 +660,7 @@ def main() -> None:
             and http.get(f"{PT}/projects/smoke/views/smoke-view", headers=H(analyst)).status_code
             == 200,
         )
+        rename_checks(http, admin, client, sql)
         http.request(
             "DELETE",
             "/api/admin/access",

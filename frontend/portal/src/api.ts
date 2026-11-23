@@ -26,6 +26,7 @@ export interface PortalElement {
 export interface PortalViewData {
   client: ClientRef;
   project: { slug: string; name: string };
+  slug: string; // canonical view slug (URL is replaced when it differs)
   name: string;
   description: string | null;
   published_at: string | null;
