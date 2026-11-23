@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Alert, Box, Tab, Tabs, Typography } from "@mui/material";
-import { get, post, type Project, type ViewSummary } from "../api";
-import { Btn, ErrorBox, Loading, PageHeader, errMsg, monoSx, viewStatus } from "../ui";
+import { get, post, type Project, type TableauLink, type ViewSummary } from "../api";
+import { Btn, ErrorBox, Loading, PageHeader, errMsg, monoSx, slugify, viewStatus } from "../ui";
 import { ClientPreviewButton, PREVIEW_BASE } from "../Preview";
 import { LinkCard, NameSlugForm } from "./Clients";
 import { Settings } from "./Settings";
+import { TableauSettings } from "./TableauSettings";
 
 type TabId = "settings" | "builder";
 
@@ -35,16 +36,33 @@ export function ProjectPage() {
         <Settings client={client} project={project} initial={info?.config ?? null}
           onSaved={(cfg) => setInfo((p) => (p ? { ...p, config: cfg } : p))} />
       )}
-      {tab === "builder" && <ViewList client={client} project={project} hasTables={!!info?.config?.tables.length} goSettings={() => setTab("settings")} />}
+      {tab === "settings" && info?.config && (
+        <TableauSettings client={client} project={project} link={info.config.tableau_link ?? null}
+          onLinked={(l) => setInfo((p) => (p && p.config ? { ...p, config: { ...p.config, tableau_link: l } } : p))} />
+      )}
+      {tab === "builder" && <ViewList client={client} project={project} hasTables={!!info?.config?.tables.length} tableau={info?.config?.tableau_link ?? null} goSettings={() => setTab("settings")} />}
     </Box>
   );
 }
 
-function ViewList({ client, project, hasTables, goSettings }: { client: string; project: string; hasTables: boolean; goSettings: () => void }) {
+function ViewList({ client, project, hasTables, tableau, goSettings }: { client: string; project: string; hasTables: boolean; tableau: TableauLink | null; goSettings: () => void }) {
   const [views, setViews] = useState<ViewSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const nav = useNavigate();
+
+  /** New view "Imported: <workbook>"; the editor then runs the import into its local draft. */
+  async function startImport() {
+    if (!tableau) return;
+    const name = `Imported: ${tableau.workbook_name}`.slice(0, 120);
+    const slug = slugify(name) || "imported";
+    const taken = new Set(views?.map((v) => v.slug));
+    const final = taken.has(slug) ? `${slug.slice(0, 56)}-${Math.random().toString(36).slice(2, 6)}` : slug;
+    try {
+      await post(`/clients/${client}/projects/${project}/views`, { name, slug: final });
+      nav(`/c/${client}/p/${project}/v/${final}?import=1`);
+    } catch (e) { setError(errMsg(e)); }
+  }
 
   useEffect(() => {
     get<ViewSummary[]>(`/clients/${client}/projects/${project}/views`).then(setViews).catch((e) => setError(errMsg(e)));
@@ -59,7 +77,14 @@ function ViewList({ client, project, hasTables, goSettings }: { client: string; 
       )}
       <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <Typography variant="h6" component="h2">Views</Typography>
-        <Btn onClick={() => setAdding(true)}>Add view</Btn>
+        <Box sx={{ display: "flex", gap: 1 }}>
+          {tableau && hasTables && (
+            <Btn variant="secondary" onClick={() => void startImport()} title="Creates a new view and fills an unsaved draft. Nothing is published.">
+              Import from Tableau
+            </Btn>
+          )}
+          <Btn onClick={() => setAdding(true)}>Add view</Btn>
+        </Box>
       </Box>
       {adding && (
         <NameSlugForm label="View" withDescription onCancel={() => setAdding(false)}

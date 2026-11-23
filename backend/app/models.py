@@ -1,6 +1,6 @@
 """Pydantic models: API payloads, stored entities, and the view spec (docs/VIEW_SPEC.md)."""
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -8,6 +8,7 @@ from pydantic import (
     Field,
     StringConstraints,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -89,19 +90,64 @@ class ChartDef(BaseModel):
     series: str | None = None
     stacked: bool = False
     format: dict[str, str] = Field(default_factory=dict)
+    outline: bool = False  # area: draw a stroke on top of the fill
+    labels: bool = False  # show value labels on points/bars
+
+
+class PivotDef(BaseModel):
+    """Table pivot: one row per `row` value, one column per `column` value, cells = `value`."""
+
+    model_config = ConfigDict(extra="forbid")
+    row: str
+    column: str
+    value: str
+
+
+class HeatmapDef(BaseModel):
+    """Color table cells by value. diverging = red (low) to green (high); sequential = light to dark."""
+
+    model_config = ConfigDict(extra="forbid")
+    palette: Literal["diverging", "sequential"] = "sequential"
+    min: float = 0.0
+    max: float = 1.0
+
+
+class ImportMeta(BaseModel):
+    """Provenance of an element created by the Tableau import (a scaffold: analysts verify it)."""
+
+    model_config = ConfigDict(extra="forbid")
+    source: Literal["tableau"] = "tableau"
+    sheet_name: str = ""
+    status: Literal["unverified", "needs_review", "verified", "differs"] = "unverified"
+    notes: list[str] = Field(default_factory=list)
+    dry_run_bytes: int | None = None
+    source_is_view: bool = False
+    base_tables: list[str] = Field(default_factory=list)
 
 
 class Element(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
     id: str
     type: Literal["chart", "table", "kpi", "text"]
     title: str = ""
     chart: ChartDef | None = None
+    pivot: PivotDef | None = None  # table only
+    heatmap: HeatmapDef | None = None  # table only (needs pivot)
     sql: str = ""
     format: dict[str, str] = Field(
         default_factory=dict
     )  # column -> currency|percent|number (table/kpi)
     cache_ttl_seconds: int = Field(default=3600, ge=0, le=7 * 86400)
+    import_meta: ImportMeta | None = Field(default=None, alias="import")  # Tableau import only
+    review_status: Literal["reviewed"] | None = None  # analyst sign-off for imported elements
+
+    @model_serializer(mode="wrap")
+    def _drop_unset_import(self, handler: Any) -> dict[str, Any]:
+        d = handler(self)
+        for k in ("import", "review_status"):
+            if d.get(k) is None:
+                d.pop(k, None)
+        return d
 
     @model_validator(mode="after")
     def _check(self) -> "Element":
@@ -162,12 +208,24 @@ class ProjectSettingsIn(BaseModel):
     max_bytes_billed: int | None = Field(default=None, gt=0)
 
 
+class TableauLink(BaseModel):
+    workbook_id: Annotated[str, StringConstraints(pattern=r"^[0-9a-fA-F-]{8,64}$")]
+    workbook_name: Name
+
+
 class ProjectConfig(BaseModel):
     bq_project: str | None = None
     tables: list[str] = Field(default_factory=list)
     max_bytes_billed: int | None = None
+    tableau_link: TableauLink | None = None
 
 
 class QueryIn(BaseModel):
     sql: str
     refresh: bool = False
+    gate: bool = False  # imported elements: dry-run first; views / large scans need `confirm`
+    confirm: bool = False
+
+
+class PublishIn(BaseModel):
+    confirm_unreviewed: bool = False  # explicit OK to publish unverified imported elements

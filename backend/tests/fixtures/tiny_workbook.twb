@@ -1,0 +1,148 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<workbook version='18.1' source-platform='win'>
+  <datasources>
+    <datasource caption='Occupancy (client_data)' inline='true' name='federated.abc123' version='18.1'>
+      <connection class='federated'>
+        <named-connections>
+          <named-connection caption='bigquery.googleapis.com' name='bigquery.xyz789'>
+            <connection class='bigquery' project='demo-proj' dataset='client_data'
+                        server='bigquery.googleapis.com' username='svc-user@example.com'
+                        password='HUNTER2-PASSWORD' oauth-token='OAUTHTOKEN-ABC' server-oauth='SERVEROAUTH-XYZ'
+                        authentication='oauth' one-time-sql='' dbname='C:\secret\path\extract.hyper'
+                        refresh-token='REFRESH-TOKEN-123' />
+          </named-connection>
+        </named-connections>
+        <relation connection='bigquery.xyz789' name='occ' table='[client_data].[occ]' type='table' />
+      </connection>
+      <column datatype='date' name='[date]' role='dimension' type='ordinal' />
+      <column datatype='string' name='[location]' role='dimension' type='nominal' />
+      <column datatype='string' name='[country_mms]' caption='Country MMS' role='dimension' type='nominal' />
+      <column datatype='real' name='[occupied_sqft]' caption='Occupied Sqft' role='measure' type='quantitative' />
+      <column datatype='real' name='[available_sqft]' caption='Available Sqft' role='measure' type='quantitative' />
+      <column caption='Occupancy' datatype='real' name='[Calculation_1]' role='measure' type='quantitative'>
+        <calculation class='tableau' formula='SUM([occupied_sqft]) / SUM([available_sqft])' />
+      </column>
+      <column caption='Window Occ' datatype='real' name='[Calculation_2]' role='measure' type='quantitative'>
+        <calculation class='tableau' formula='WINDOW_AVG([Calculation_1])' />
+      </column>
+      <extract count='-1' enabled='true'>
+        <connection class='hyper' dbname='C:\secret\path\extract.hyper' username='tableau_internal_user' />
+      </extract>
+    </datasource>
+    <datasource hasconnection='false' inline='true' name='Parameters'>
+      <column caption='Top N' datatype='integer' name='[Parameter 1]' param-domain-type='range' role='measure' type='quantitative' value='10'>
+        <calculation class='tableau' formula='10' />
+      </column>
+    </datasource>
+  </datasources>
+  <worksheets>
+    <worksheet name='Trend'>
+      <table>
+        <view>
+          <datasources><datasource caption='Occupancy (client_data)' name='federated.abc123' /></datasources>
+          <datasource-dependencies datasource='federated.abc123'>
+            <column caption='Occupancy' datatype='real' name='[Calculation_1]' role='measure' type='quantitative'>
+              <calculation class='tableau' formula='SUM([occupied_sqft]) / SUM([available_sqft])' />
+            </column>
+            <column datatype='date' name='[date]' role='dimension' type='ordinal' />
+            <column-instance column='[Calculation_1]' derivation='User' name='[usr:Calculation_1:qk]' pivot='key' type='quantitative' />
+            <column-instance column='[date]' derivation='Month-Trunc' name='[tmn:date:qk]' pivot='key' type='quantitative' />
+          </datasource-dependencies>
+          <filter class='categorical' column='[federated.abc123].[none:country_mms:nk]'>
+            <groupfilter function='member' level='[none:country_mms:nk]' member='&quot;MMS&quot;' user:ui-domain='database' xmlns:user='http://www.tableausoftware.com/xml/user' />
+          </filter>
+          <filter class='quantitative' column='[federated.abc123].[none:date:qk]' included-values='in-range'>
+            <min>#2025-07-01#</min>
+            <max>#2026-03-31#</max>
+          </filter>
+          <slices>
+            <column>[federated.abc123].[none:country_mms:nk]</column>
+            <column>[federated.abc123].[none:date:qk]</column>
+          </slices>
+        </view>
+        <panes>
+          <pane selection-relaxation-option='selection-relaxation-allow'><view><breakdown value='auto' /></view><mark class='Automatic' /></pane>
+          <pane id='2' y-axis-name='[federated.abc123].[usr:Calculation_1:qk]'><view><breakdown value='auto' /></view><mark class='Line' /></pane>
+          <pane id='3' y-axis-name='[federated.abc123].[usr:Calculation_1:qk]'><view><breakdown value='auto' /></view><mark class='Area' />
+            <encodings><text column='[federated.abc123].[usr:Calculation_1:qk]' /></encodings></pane>
+        </panes>
+        <rows>([federated.abc123].[usr:Calculation_1:qk] + [federated.abc123].[usr:Calculation_1:qk])</rows>
+        <cols>[federated.abc123].[tmn:date:qk]</cols>
+      </table>
+    </worksheet>
+    <worksheet name='Heatmap'>
+      <table>
+        <view>
+          <datasource-dependencies datasource='federated.abc123'>
+            <column datatype='string' name='[location]' role='dimension' type='nominal' />
+            <column datatype='date' name='[date]' role='dimension' type='ordinal' />
+            <column caption='Occupancy' datatype='real' name='[Calculation_1]' role='measure' type='quantitative'>
+              <calculation class='tableau' formula='SUM([occupied_sqft]) / SUM([available_sqft])' />
+            </column>
+            <column-instance column='[location]' derivation='None' name='[none:location:nk]' pivot='key' type='nominal' />
+            <column-instance column='[date]' derivation='Month-Trunc' name='[tmn:date:ok]' pivot='key' type='ordinal' />
+            <column-instance column='[Calculation_1]' derivation='User' name='[usr:Calculation_1:qk]' pivot='key' type='quantitative' />
+          </datasource-dependencies>
+          <filter class='categorical' column='[federated.abc123].[none:country_mms:nk]'>
+            <groupfilter function='member' level='[none:country_mms:nk]' member='&quot;MMS&quot;' xmlns:user='http://www.tableausoftware.com/xml/user' />
+          </filter>
+        </view>
+        <panes>
+          <pane><view><breakdown value='auto' /></view><mark class='Square' />
+            <encodings><color column='[federated.abc123].[usr:Calculation_1:qk]' /><text column='[federated.abc123].[usr:Calculation_1:qk]' /></encodings></pane>
+        </panes>
+        <rows>[federated.abc123].[none:location:nk]</rows>
+        <cols>[federated.abc123].[tmn:date:ok]</cols>
+      </table>
+    </worksheet>
+    <worksheet name='Total'>
+      <table>
+        <view>
+          <datasource-dependencies datasource='federated.abc123'>
+            <column caption='Occupancy' datatype='real' name='[Calculation_1]' role='measure' type='quantitative'>
+              <calculation class='tableau' formula='SUM([occupied_sqft]) / SUM([available_sqft])' />
+            </column>
+            <column-instance column='[Calculation_1]' derivation='User' name='[usr:Calculation_1:qk]' pivot='key' type='quantitative' />
+          </datasource-dependencies>
+        </view>
+        <panes>
+          <pane><view><breakdown value='auto' /></view><mark class='Automatic' />
+            <encodings><text column='[federated.abc123].[usr:Calculation_1:qk]' /></encodings></pane>
+        </panes>
+        <rows />
+        <cols />
+      </table>
+    </worksheet>
+    <worksheet name='Rolling'>
+      <table>
+        <view>
+          <datasource-dependencies datasource='federated.abc123'>
+            <column datatype='date' name='[date]' role='dimension' type='ordinal' />
+            <column caption='Window Occ' datatype='real' name='[Calculation_2]' role='measure' type='quantitative'>
+              <calculation class='tableau' formula='WINDOW_AVG([Calculation_1])' />
+            </column>
+            <column-instance column='[date]' derivation='Month-Trunc' name='[tmn:date:qk]' pivot='key' type='quantitative' />
+            <column-instance column='[Calculation_2]' derivation='User' name='[usr:Calculation_2:qk]' pivot='key' type='quantitative' />
+          </datasource-dependencies>
+        </view>
+        <panes><pane><view><breakdown value='auto' /></view><mark class='Line' /></pane></panes>
+        <rows>[federated.abc123].[usr:Calculation_2:qk]</rows>
+        <cols>[federated.abc123].[tmn:date:qk]</cols>
+      </table>
+    </worksheet>
+  </worksheets>
+  <dashboards>
+    <dashboard name='Occupancy Dashboard'>
+      <size maxheight='800' maxwidth='1000' minheight='800' minwidth='1000' sizing-mode='fixed' />
+      <zones>
+        <zone h='100000' id='4' type-v2='layout-basic' w='100000' x='0' y='0'>
+          <zone h='6000' id='5' type-v2='title' w='100000' x='0' y='0' />
+          <zone h='34250' id='6' name='Total' w='19600' x='800' y='6000' />
+          <zone h='34250' id='7' name='Trend' w='78800' x='20400' y='6000' />
+          <zone h='59000' id='8' name='Heatmap' w='98400' x='800' y='40250' />
+          <zone h='20000' id='9' name='Trend' param='[federated.abc123].[none:country_mms:nk]' type-v2='filter' mode='checkdropdown' w='20000' x='0' y='0' />
+        </zone>
+      </zones>
+    </dashboard>
+  </dashboards>
+</workbook>

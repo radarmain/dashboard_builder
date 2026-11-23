@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
-import { SpecRenderer, type DataMap, type ElementData, type ElementType, type ViewElement, type ViewSpec } from "@rdb/shared";
-import { ApiError, get, post, type ChatOp, type ViewSummary } from "../api";
+import { useParams, useSearchParams } from "react-router-dom";
+import { SpecRenderer, type DataEntry, type DataMap, type ElementData, type ElementType, type ViewElement, type ViewSpec } from "@rdb/shared";
+import { ApiError, get, post, type ChatOp, type GateInfo, type PublishGuard, type ViewSummary } from "../api";
 import { AppBar, Box, IconButton, Menu, MenuItem, Snackbar, Toolbar, Tooltip, Typography } from "@mui/material";
-import { Badge, Btn, ErrorBox, Loading, errMsg, viewStatus } from "../ui";
+import { Badge, Btn, ConfirmDialog, ErrorBox, Loading, errMsg, viewStatus } from "../ui";
+import { GateDialog, fmtBytes, gateFrom } from "./RunGate";
 import { ChatPanel } from "./ChatPanel";
 import { ElementPanel } from "./ElementPanel";
+import { ImportPanel } from "./ImportPanel";
 import { RevisionsDrawer } from "./RevisionsDrawer";
 import { ViewSettingsDialog } from "./ViewSettingsDialog";
 import { publicViewUrl } from "@rdb/portal";
@@ -24,6 +26,8 @@ export function ViewEditor() {
   const { client = "", project = "", view = "" } = useParams();
   const base = `/clients/${client}/projects/${project}`;
   const viewPath = `${base}/views/${view}`;
+  const [search, setSearch] = useSearchParams();
+  const [importing, setImporting] = useState(search.get("import") === "1");
 
   const [meta, setMeta] = useState<ViewSummary | null>(null);
   const [spec, setSpec] = useState<ViewSpec | null>(null);
@@ -36,6 +40,9 @@ export function ViewEditor() {
   const [showRevisions, setShowRevisions] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [addAnchor, setAddAnchor] = useState<HTMLElement | null>(null);
+  const [gate, setGate] = useState<{ ids: string[]; info: GateInfo } | null>(null); // run needs an explicit OK
+  const [guard, setGuard] = useState<PublishGuard | null>(null); // publish with unreviewed imported elements
+  const runImportedRef = useRef<(id: string, confirm?: boolean) => Promise<void>>(async () => {});
 
   const [undoStack, setUndoStack] = useState<ViewSpec[]>([]); // spec before each of the last 10 AI responses
   const [touched, setTouched] = useState<Record<string, number>>({}); // bumps remount the panel when chat edits an element
@@ -47,9 +54,21 @@ export function ViewEditor() {
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
 
+  /** Imported elements are lazy: no query runs until the analyst presses Run (dry-run estimate shown). */
+  const idleEntry = useCallback((el: ViewElement): DataEntry => ({
+    status: "idle",
+    text: `Not run yet. Estimated ${fmtBytes(el.import?.dry_run_bytes)}${el.import?.source_is_view ? " (view source)" : ""}.`,
+    onRun: () => void runImportedRef.current(el.id),
+  }), []);
+
   const loadData = useCallback(async (s: ViewSpec) => {
-    const runnable = s.elements.filter((e) => e.sql.trim() && e.type !== "text");
-    setData(Object.fromEntries(runnable.map((e) => [e.id, { status: "loading" as const }])));
+    const all = s.elements.filter((e) => e.sql.trim() && e.type !== "text");
+    const lazy = all.filter((e) => e.import);
+    const runnable = all.filter((e) => !e.import);
+    setData({
+      ...Object.fromEntries(lazy.map((e) => [e.id, idleEntry(e)])),
+      ...Object.fromEntries(runnable.map((e) => [e.id, { status: "loading" as const }])),
+    });
     await Promise.all(runnable.map(async (e) => {
       try {
         const d = await get<ElementData>(`${viewPath}/data/${e.id}?draft=true`);
@@ -58,7 +77,7 @@ export function ViewEditor() {
         setData((m) => ({ ...m, [e.id]: { status: "error", message: errMsg(err) } }));
       }
     }));
-  }, [viewPath]);
+  }, [viewPath, idleEntry]);
 
   const load = useCallback(async () => {
     setError(null);
@@ -107,6 +126,7 @@ export function ViewEditor() {
   /** Run an element's SQL through the validated /query path and show it on the canvas. */
   async function fetchElementData(el: ViewElement) {
     if (el.type === "text" || !el.sql.trim()) return;
+    if (el.import) { setData((m) => ({ ...m, [el.id]: idleEntry(el) })); return; }
     setData((m) => ({ ...m, [el.id]: { status: "loading" } }));
     try {
       const d = await post<ElementData>(`${base}/query`, { sql: el.sql });
@@ -114,6 +134,35 @@ export function ViewEditor() {
     } catch (err) {
       setData((m) => ({ ...m, [el.id]: { status: "error", message: errMsg(err) } }));
     }
+  }
+
+  /** Run an imported element through /query with the dry-run gate (views / big scans ask first). */
+  async function runImported(id: string, confirm = false) {
+    const el = specRef.current?.elements.find((e) => e.id === id);
+    if (!el) return;
+    setData((m) => ({ ...m, [id]: { status: "loading" } }));
+    try {
+      const d = await post<ElementData>(`${base}/query`, { sql: el.sql, gate: true, confirm });
+      setData((m) => ({ ...m, [id]: { status: "ok", data: d } }));
+    } catch (err) {
+      const info = gateFrom(err);
+      if (info) { setData((m) => ({ ...m, [id]: idleEntry(el) })); setGate({ ids: [id], info }); return; }
+      setData((m) => ({ ...m, [id]: { status: "error", message: errMsg(err) } }));
+    }
+  }
+  runImportedRef.current = runImported;
+
+  const idle = (spec?.elements ?? []).filter((e) => { const d = data[e.id]; return e.import && d && "status" in d && d.status === "idle"; });
+  const idleBytes = idle.reduce((n, e) => n + (e.import?.dry_run_bytes ?? 0), 0);
+  function runAllInfo(): GateInfo {
+    return {
+      needs_confirmation: true,
+      estimated_bytes: idleBytes,
+      source_is_view: idle.some((e) => e.import?.source_is_view),
+      base_tables: [...new Set(idle.flatMap((e) => e.import?.base_tables ?? []))],
+      reasons: [`${idle.length} imported element${idle.length === 1 ? "" : "s"} will run`, ...(idle.some((e) => e.import?.source_is_view) ? ["some sources are views (every run re-executes their query)"] : [])],
+      suggestion: "Consider a materialized table for the base data; views can be slow and costly.",
+    };
   }
 
   /** Apply validated AI operations to the LOCAL draft only. Nothing is saved or published. */
@@ -203,13 +252,17 @@ export function ViewEditor() {
     } catch (e) { setError(errMsg(e)); } finally { setBusy(null); }
   }
 
-  async function publish() {
+  async function publish(confirmUnreviewed = false) {
     setError(null); setNotice(null); setBusy("publish");
     try {
-      const r = await post<{ published_revision: number }>(`${viewPath}/publish`);
+      const r = await post<{ published_revision: number }>(`${viewPath}/publish`, { confirm_unreviewed: confirmUnreviewed });
       setNotice(`Published revision ${r.published_revision}`);
       setMeta(await get<ViewSummary>(viewPath));
-    } catch (e) { setError(`Publish refused: ${errMsg(e)}`); } finally { setBusy(null); }
+    } catch (e) {
+      const g = e instanceof ApiError && e.status === 409 ? (e.detail as PublishGuard | undefined) : undefined;
+      if (g?.reason === "unreviewed_imports") setGuard(g);
+      else setError(`Publish refused: ${errMsg(e)}`);
+    } finally { setBusy(null); }
   }
 
   const selected = useMemo(() => spec?.elements.find((e) => e.id === selectedId) ?? null, [spec, selectedId]);
@@ -235,7 +288,7 @@ export function ViewEditor() {
             <ClientPreviewButton to={`${PREVIEW_BASE}/c/${client}/p/${project}/v/${view}`} />
             <Btn variant="ghost" onClick={() => setShowRevisions(true)}>Revisions</Btn>
             <Btn variant="secondary" onClick={save} disabled={!!busy || !dirty}>{busy === "save" ? "Saving…" : "Save"}</Btn>
-            <Btn onClick={publish} disabled={!canPublish} title={dirty ? "Save your edits first" : !meta.has_unpublished_changes ? "Nothing to publish" : ""}>
+            <Btn onClick={() => void publish()} disabled={!canPublish} title={dirty ? "Save your edits first" : !meta.has_unpublished_changes ? "Nothing to publish" : ""}>
               {busy === "publish" ? "Publishing…" : "Publish"}
             </Btn>
           </Box>
@@ -255,6 +308,11 @@ export function ViewEditor() {
                   <MenuItem key={t} onClick={() => addElement(t)} sx={{ textTransform: "capitalize", minWidth: 140 }}>{t}</MenuItem>
                 ))}
               </Menu>
+              {idle.length > 0 && (
+                <Btn variant="secondary" onClick={() => setGate({ ids: idle.map((e) => e.id), info: runAllInfo() })}>
+                  Run all ({idle.length}, ~{fmtBytes(idleBytes)})
+                </Btn>
+              )}
               <Typography variant="caption" color="text.secondary">Click an element to edit it.</Typography>
             </Box>
             {spec.elements.length === 0 ? (
@@ -265,6 +323,11 @@ export function ViewEditor() {
               <SpecRenderer spec={spec} data={data} selectedId={selectedId} onSelect={setSelectedId} popVersions={touched} />
             )}
           </Box>
+          {importing && (
+            <ImportPanel base={base} viewName={meta.name} getSpec={() => specRef.current as ViewSpec}
+              onChanges={applyChatOps} onUndo={undoAi} undoCount={undoStack.length}
+              onClose={() => { setImporting(false); setSearch({}, { replace: true }); }} />
+          )}
           <ChatPanel chatPath={`${viewPath}/chat`} getSpec={() => specRef.current as ViewSpec} onChanges={applyChatOps} onUndo={undoAi} undoCount={undoStack.length} />
         </Box>
 
@@ -283,6 +346,18 @@ export function ViewEditor() {
         )}
       </Box>
 
+      <GateDialog info={gate?.info ?? null} title={gate && gate.ids.length > 1 ? "Run all imported elements?" : "Run this query?"}
+        onCancel={() => setGate(null)}
+        onConfirm={() => { const ids = gate?.ids ?? []; setGate(null); ids.forEach((id) => void runImported(id, true)); }} />
+      <ConfirmDialog open={!!guard} title="Publish with unreviewed imported elements?" confirmLabel="Publish anyway"
+        onCancel={() => setGuard(null)}
+        onConfirm={() => { setGuard(null); void publish(true); }}
+        body={guard && (
+          <>
+            <Typography variant="body2" sx={{ mb: 1 }}>These imported elements have not been verified or marked reviewed. Clients will see them as-is. Your confirmation is recorded in the audit log.</Typography>
+            {guard.elements.map((e) => <Typography key={e.id} variant="body2">• {e.title || e.sheet || e.id} ({e.status.replace("_", " ")})</Typography>)}
+          </>
+        )} />
       {showSettings && (
         <ViewSettingsDialog
           viewPath={viewPath}

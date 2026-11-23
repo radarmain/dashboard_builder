@@ -76,6 +76,9 @@ export function ChartView({ chart, data }: { chart: ChartDef; data: ElementData 
   const { rows, keys, xKind } = prep;
   const fmtY = (key: string) => (v: unknown) => formatValue(v, chart.format?.[key] ?? chart.format?.[chart.y[0]]);
   const fmtX = (v: unknown) => (xKind === "time" ? formatDate(Number(v)) : String(v));
+  const lbl = chart.labels
+    ? { formatter: (v: unknown) => fmtY(keys[0])(v), fontSize: 11, fontFamily: T.font, fill: T.onSurfaceVariant, position: "top" as const }
+    : false;
   const tipFmt = (v: unknown, name: string) => [fmtY(name)(v), name] as [string, string];
   const timeAxis = xKind === "time" && chart.kind !== "bar";
   const xAxis = (
@@ -98,11 +101,11 @@ export function ChartView({ chart, data }: { chart: ChartDef; data: ElementData 
   switch (chart.kind) {
     case "line":
       body = <LineChart {...common}>{grid}{xAxis}{yAxis}{tip}{legend}
-        {keys.map((k, i) => <Line key={k} dataKey={k} stroke={COLORS[i % COLORS.length]} dot={rows.length < 40} strokeWidth={2} connectNulls />)}</LineChart>;
+        {keys.map((k, i) => <Line key={k} dataKey={k} stroke={COLORS[i % COLORS.length]} dot={rows.length < 40} strokeWidth={2} label={lbl as never} connectNulls />)}</LineChart>;
       break;
     case "area":
       body = <AreaChart {...common}>{grid}{xAxis}{yAxis}{tip}{legend}
-        {keys.map((k, i) => <Area key={k} dataKey={k} stackId={chart.stacked ? "s" : undefined} stroke={COLORS[i % COLORS.length]} fill={COLORS[i % COLORS.length]} fillOpacity={0.3} connectNulls />)}</AreaChart>;
+        {keys.map((k, i) => <Area key={k} dataKey={k} stackId={chart.stacked ? "s" : undefined} stroke={COLORS[i % COLORS.length]} fill={COLORS[i % COLORS.length]} fillOpacity={0.3} strokeWidth={chart.outline ? 2.5 : 1} label={lbl as never} connectNulls />)}</AreaChart>;
       break;
     case "scatter":
       body = <ScatterChart margin={common.margin}>{grid}
@@ -123,7 +126,7 @@ export function ChartView({ chart, data }: { chart: ChartDef; data: ElementData 
     }
     default:
       body = <BarChart {...common}>{grid}{xAxis}{yAxis}{tip}{legend}
-        {keys.map((k, i) => <Bar key={k} dataKey={k} stackId={chart.stacked ? "s" : undefined} fill={COLORS[i % COLORS.length]} />)}</BarChart>;
+        {keys.map((k, i) => <Bar key={k} dataKey={k} stackId={chart.stacked ? "s" : undefined} fill={COLORS[i % COLORS.length]} label={lbl as never} />)}</BarChart>;
   }
   return <ResponsiveContainer width="100%" height="100%">{body}</ResponsiveContainer>;
 }

@@ -61,6 +61,8 @@ Stack `rdb-app`: Lambda container API (`rdb-api`, arm64, Web Adapter, streaming 
 (`BuilderUrl`, `ViewerUrl`). Local dev and the deployed app share the same table/bucket/user pool.
 Tableau (read-only): `AWS_PROFILE=concrete .venv/bin/python scripts/tableau_inventory.py` prints an inventory summary of the Tableau Cloud site and writes the full dump to `.local/tableau_inventory/` (gitignored). `scripts/create_tableau_secret.py` copies the `.env` Tableau values into the `rdb_tableau` secret (refuses to overwrite without `--force`).
 
+Tableau import (scaffold): `AWS_PROFILE=concrete .venv/bin/python scripts/tableau_import_test.py --in-process` runs the Occupancy import in STRUCTURE mode (dry runs only, 0 bytes scanned, at most 4 tool iterations per sheet). Imported elements are saved unverified and load lazily in the Builder; VERIFY (compare once with the Tableau reference CSV) is an opt-in per-sheet button. `RDB_IMPORT_CONFIRM_BYTES` (default 2 GB) sets when a run needs confirmation; views always do. Publishing a view with unreviewed imported elements needs a confirm.
+
 Post-deploy checks: `curl <url>/health`, `scripts/smoke_test.py project.dataset.table --base-url <builder-url>`,
 `scripts/chat_test.py CLIENT PROJECT VIEW "msg" --temp-user --base-url <builder-url>` (prints time to first event).
 

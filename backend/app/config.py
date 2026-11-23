@@ -27,6 +27,11 @@ class Settings(BaseModel):
     chat_max_output_tokens: int
     chat_timeout_seconds: int
     chat_max_iterations: int
+    import_max_bytes_billed: int
+    import_run_budget_bytes: int
+    import_max_iterations: int
+    import_timeout_seconds: int
+    import_confirm_bytes: int
     staff_email_domains: list[str]
 
     @property
@@ -55,6 +60,11 @@ def get_settings() -> Settings:
         chat_max_output_tokens=int(env.get("RDB_CHAT_MAX_OUTPUT_TOKENS", "4096")),
         chat_timeout_seconds=int(env.get("RDB_CHAT_TIMEOUT_SECONDS", "120")),
         chat_max_iterations=int(env.get("RDB_CHAT_MAX_ITERATIONS", "8")),
+        import_max_bytes_billed=int(env.get("RDB_IMPORT_MAX_BYTES_BILLED", "8000000000")),
+        import_run_budget_bytes=int(env.get("RDB_IMPORT_RUN_BUDGET_BYTES", "40000000000")),
+        import_max_iterations=int(env.get("RDB_IMPORT_MAX_ITERATIONS", "8")),
+        import_timeout_seconds=int(env.get("RDB_IMPORT_TIMEOUT_SECONDS", "120")),
+        import_confirm_bytes=int(env.get("RDB_IMPORT_CONFIRM_BYTES", "2000000000")),
         staff_email_domains=[
             d.strip().lower().lstrip("@")
             for d in env.get("RDB_STAFF_EMAIL_DOMAINS", "radar-analytics.com").split(",")

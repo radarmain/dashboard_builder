@@ -114,7 +114,10 @@ ModelFn = Callable[[str, list[dict[str, Any]], int], Iterator[dict[str, Any]]]
 
 
 def bedrock_model_fn(
-    system: str, messages: list[dict[str, Any]], max_tokens: int
+    system: str,
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+    tools: list[dict[str, Any]] | None = None,
 ) -> Iterator[dict[str, Any]]:
     from app.aws import session  # lazy: keeps the loop importable without AWS
 
@@ -124,7 +127,7 @@ def bedrock_model_fn(
         modelId=s.bedrock_model_id,
         system=[{"text": system}],
         messages=messages,
-        toolConfig={"tools": TOOLS},
+        toolConfig={"tools": tools or TOOLS},
         inferenceConfig={"maxTokens": max_tokens},
     )
     blocks: dict[int, dict[str, Any]] = {}
@@ -202,13 +205,17 @@ def run_chat(
     max_tokens: int | None = None,
     timeout_seconds: float | None = None,
     clock: Callable[[], float] = time.monotonic,
+    system: str | None = None,  # import agent supplies its own prompt, tools dispatch and stop rule
+    dispatch: Callable[..., tuple[dict[str, Any], list[dict[str, Any]]]] | None = None,
+    stop_check: Callable[[], str | None] | None = None,
 ) -> Iterator[dict[str, Any]]:
     s = get_settings() if None in (max_iterations, max_tokens, timeout_seconds) else None
     max_iterations = max_iterations if max_iterations is not None else s.chat_max_iterations  # type: ignore[union-attr]
     max_tokens = max_tokens if max_tokens is not None else s.chat_max_output_tokens  # type: ignore[union-attr]
     timeout_seconds = timeout_seconds if timeout_seconds is not None else s.chat_timeout_seconds  # type: ignore[union-attr]
 
-    system = build_system_prompt(ctx, view_name)  # fixed for the whole request
+    system = system or build_system_prompt(ctx, view_name)  # fixed for the whole request
+    dispatch = dispatch or _dispatch
     messages = to_messages(history, message)
     deadline = clock() + timeout_seconds
     tool_rounds = 0
@@ -258,7 +265,7 @@ def run_chat(
             for u in uses:
                 yield {"type": "status", "text": STATUS.get(u["name"], "Working...")}
                 t0 = time.monotonic()
-                result, accepted = _dispatch(ctx, u["name"], u.get("input") or {})
+                result, accepted = dispatch(ctx, u["name"], u.get("input") or {})
                 log.info(
                     "tool=%s ms=%d ok=%s",
                     u["name"],
@@ -271,6 +278,9 @@ def run_chat(
                     {"toolResult": {"toolUseId": u["toolUseId"], "content": [{"json": result}]}}
                 )
             messages.append({"role": "user", "content": results})
+            if stop_check and (why := stop_check()):
+                yield {"type": "error", "message": why}
+                break
     except Exception as e:  # noqa: BLE001
         log.warning("chat failed: %s", type(e).__name__)
         yield {"type": "error", "message": f"{type(e).__name__}: {str(e)[:300]}"}

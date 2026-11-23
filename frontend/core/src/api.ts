@@ -3,7 +3,11 @@ import { getIdToken } from "./auth";
 export const API_BASE: string = import.meta.env.VITE_API_URL ?? ""; // empty = same origin (Vite proxies /api in dev)
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+    public detail?: unknown, // parsed `detail` when the server sent an object (e.g. 409 confirmation)
+  ) {
     super(message);
   }
 }
@@ -17,6 +21,7 @@ export const notifyUnauthorized = () => onUnauthorized();
 export function detailText(body: unknown, fallback: string): string {
   const d = (body as { detail?: unknown } | null)?.detail;
   if (typeof d === "string") return d;
+  if (d && typeof d === "object" && !Array.isArray(d)) return "Confirmation required";
   if (Array.isArray(d))
     return d.map((x: { loc?: unknown[]; msg?: string }) => `${(x.loc ?? []).slice(1).join(".")}: ${x.msg}`).join("; ");
   return fallback;
@@ -40,7 +45,10 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
     onUnauthorized();
     throw new ApiError(401, "Session expired");
   }
-  if (!res.ok) throw new ApiError(res.status, detailText(json, text.slice(0, 300) || res.statusText));
+  if (!res.ok) {
+    const d = (json as { detail?: unknown } | null)?.detail;
+    throw new ApiError(res.status, detailText(json, text.slice(0, 300) || res.statusText), typeof d === "object" ? d : undefined);
+  }
   return json as T;
 }
 

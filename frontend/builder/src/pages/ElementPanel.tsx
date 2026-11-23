@@ -1,10 +1,13 @@
 import { useMemo, useState } from "react";
 import { SpecRenderer, columnIsNumeric, type ChartDef, type ChartKind, type ElementData, type LayoutItem, type ViewElement, type ViewSpec } from "@rdb/shared";
-import { post } from "../api";
+import { post, type GateInfo } from "../api";
 import {
   Box, Checkbox, Divider, FormControlLabel, IconButton, MenuItem, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField, Typography,
 } from "@mui/material";
-import { Btn, ConfirmDialog, ErrorBox, errMsg, monoSx } from "../ui";
+import { Badge, Btn, ConfirmDialog, ErrorBox, errMsg, monoSx } from "../ui";
+import { GateDialog, fmtBytes, gateFrom } from "./RunGate";
+
+const IMPORT_TONE = { unverified: "amber", needs_review: "amber", verified: "green", differs: "amber" } as const;
 
 const KINDS: ChartKind[] = ["bar", "line", "area", "pie", "scatter"];
 const FORMATS = ["", "number", "currency", "percent"];
@@ -28,17 +31,18 @@ export function ElementPanel({ element, layout, queryPath, initialData, onApply,
   const [error, setError] = useState<string | null>(null);
   const [applied, setApplied] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [gate, setGate] = useState<GateInfo | null>(null);
 
   const columns = result?.columns ?? [];
   const patch = (p: Partial<ViewElement>) => { setEl((e) => ({ ...e, ...p })); setApplied(false); };
   const patchChart = (p: Partial<ChartDef>) => patch({ chart: { ...(el.chart as ChartDef), ...p } });
 
-  async function run() {
+  async function run(confirm = false) {
     setError(null);
     if (!el.sql.trim()) { setError("Enter some SQL first."); return; }
     setRunning(true);
     try {
-      const r = await post<QueryResult>(queryPath, { sql: el.sql, refresh });
+      const r = await post<QueryResult>(queryPath, { sql: el.sql, refresh, gate: !!el.import, confirm });
       setResult(r);
       setApplied(false);
       if (el.type === "chart" && el.chart && (!el.chart.x || !columns.length)) {
@@ -49,7 +53,9 @@ export function ElementPanel({ element, layout, queryPath, initialData, onApply,
         patch({ chart: { ...el.chart, x: keep ? el.chart.x : r.columns[0], y: el.chart.y.filter((c) => r.columns.includes(c)).length ? el.chart.y.filter((c) => r.columns.includes(c)) : [y] } });
       }
     } catch (e) {
-      setError(errMsg(e));
+      const info = gateFrom(e);
+      if (info) setGate(info);
+      else setError(errMsg(e));
     } finally {
       setRunning(false);
     }
@@ -93,12 +99,35 @@ export function ElementPanel({ element, layout, queryPath, initialData, onApply,
       <Box sx={{ display: "grid", gap: 2.5, p: 2.5 }}>
         <TextField label="Title" value={el.title} onChange={(e) => patch({ title: e.target.value })} />
 
+        {el.import && (
+          <Box sx={{ display: "grid", gap: 1, p: 2, border: 1, borderColor: "divider", borderRadius: "16px" }}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+              <Typography variant="subtitle2">Imported from Tableau: {el.import.sheet_name}</Typography>
+              <Badge tone={IMPORT_TONE[el.import.status]}>{el.import.status.replace("_", " ")}</Badge>
+              {el.review_status === "reviewed" && <Badge tone="green">reviewed</Badge>}
+            </Box>
+            <Typography variant="caption" color="text.secondary">
+              Dry-run estimate {fmtBytes(el.import.dry_run_bytes)}{el.import.source_is_view ? ", source is a view" : ""}
+              {el.import.base_tables.length > 0 && <> over <Typography component="span" variant="caption" sx={monoSx}>{el.import.base_tables.join(", ")}</Typography></>}.
+              {el.import.source_is_view && " Consider pointing the project at a materialized table."}
+            </Typography>
+            {el.import.notes.map((n, i) => <Typography key={i} variant="body2">• {n}</Typography>)}
+            <FormControlLabel label={<Typography variant="body2">Mark as reviewed (clears the publish warning)</Typography>}
+              control={<Checkbox checked={el.review_status === "reviewed"}
+                onChange={(e) => {
+                  const next = { ...el, review_status: e.target.checked ? ("reviewed" as const) : undefined };
+                  setEl(next);
+                  onApply(next, result ?? undefined);
+                }} />} />
+          </Box>
+        )}
+
         <TextField label="SQL" multiline minRows={7} value={el.sql} onChange={(e) => patch({ sql: e.target.value })}
           placeholder="SELECT channel, SUM(spend) AS spend FROM `project.dataset.table` GROUP BY channel"
           helperText="Only SELECT on this project's connected tables, using fully qualified `project.dataset.table` names."
           slotProps={{ htmlInput: { spellCheck: false, style: { fontFamily: monoSx.fontFamily, fontSize: 12 } } }} />
         <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-          <Btn onClick={run} disabled={running}>{running ? "Running…" : "Run"}</Btn>
+          <Btn onClick={() => void run()} disabled={running}>{running ? "Running…" : "Run"}</Btn>
           <FormControlLabel control={<Checkbox checked={refresh} onChange={(e) => setRefresh(e.target.checked)} />}
             label={<Typography variant="body2">Refresh (skip cache)</Typography>} />
         </Box>
@@ -203,6 +232,7 @@ export function ElementPanel({ element, layout, queryPath, initialData, onApply,
         {applied && <Typography variant="body2" sx={{ color: "success.main" }}>Applied. Remember to Save.</Typography>}
         <Btn variant="ghost" color="error" sx={{ ml: "auto" }} onClick={() => setConfirmRemove(true)}>Remove from view</Btn>
       </Box>
+      <GateDialog info={gate} onCancel={() => setGate(null)} onConfirm={() => { setGate(null); void run(true); }} />
       <ConfirmDialog open={confirmRemove} destructive title="Remove this element?" confirmLabel="Remove"
         body="It is removed from the view. Nothing is saved until you click Save."
         onConfirm={() => { setConfirmRemove(false); onRemove(); }} onCancel={() => setConfirmRemove(false)} />

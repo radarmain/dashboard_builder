@@ -7,6 +7,7 @@ for an unauthorized caller).
 import base64
 import hashlib
 import json
+import re
 from datetime import UTC, date, datetime
 from datetime import time as dtime
 from decimal import Decimal
@@ -110,7 +111,12 @@ def run_query(
     except QueryRejected:
         raise
     except Exception as e:  # noqa: BLE001
-        raise QueryFailed(f"{type(e).__name__}: {str(e)[:400]}") from None
+        hint = (
+            " The query is slow; for a view source, use a materialized table."
+            if "Timeout" in type(e).__name__ or "timed out" in str(e).lower()
+            else ""
+        )
+        raise QueryFailed(f"{type(e).__name__}: {str(e)[:400]}{hint}") from None
 
     truncated = len(rows) > rows_limit
     rows = rows[:rows_limit]
@@ -125,3 +131,78 @@ def run_query(
         key, {"created_at": datetime.now(UTC).isoformat(), "ttl": ttl, "result": result}
     )
     return result
+
+
+# ---------- dry run (zero bytes scanned) ----------
+_BQ_NAME = re.compile(r"`([A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+)`")
+
+
+def _view_info(client: Any, fqn: str) -> tuple[bool, list[str]]:
+    """(is_view, base tables named in the view's SQL). Metadata call only; failures -> unknown."""
+    try:
+        t = client.get_table(fqn)
+    except Exception:  # noqa: BLE001
+        return False, []
+    if getattr(t, "table_type", "") != "VIEW":
+        return False, []
+    base = [
+        b for b in dict.fromkeys(_BQ_NAME.findall(getattr(t, "view_query", "") or "")) if b != fqn
+    ]
+    return True, base
+
+
+def dry_run_query(cfg: ProjectConfig, sql: str, *, client: Any = None) -> dict[str, Any]:
+    """Validate (same allowlist as run_query), then BigQuery DRY-RUN: nothing executes, 0 bytes.
+
+    Returns the run_query result shape with no rows, plus `schema` [{name, type}], `bytes_processed`
+    (the estimate), `source_is_view` and `base_tables`. Errors -> QueryRejected / QueryFailed."""
+    if not cfg.bq_project or not cfg.tables:
+        raise QueryRejected("project has no connected BigQuery tables")
+    try:
+        v = validate_sql(sql, cfg.tables)
+    except SqlValidationError as e:
+        raise QueryRejected(str(e)) from None
+    client = client or get_client()
+    try:
+        job = client.query(v.sql, job_config=job_config(dry_run=True, use_query_cache=False))
+        schema = [{"name": f.name, "type": f.field_type} for f in (job.schema or [])]
+        est = int(job.total_bytes_processed or 0)
+    except Exception as e:  # noqa: BLE001
+        raise QueryFailed(f"{type(e).__name__}: {str(e)[:500]}") from None
+    is_view, base = False, []
+    for fqn in v.tables:
+        view, b = _view_info(client, fqn)
+        is_view = is_view or view
+        base += [x for x in b if x not in base]
+    return {
+        "columns": [c["name"] for c in schema],
+        "schema": schema,
+        "rows": [],
+        "truncated": False,
+        "bytes_processed": est,
+        "cache_hit": False,
+        "dry_run": True,
+        "source_is_view": is_view,
+        "base_tables": base[:10],
+    }
+
+
+def needs_confirmation(est: dict[str, Any], threshold: int) -> dict[str, Any] | None:
+    """Gate for imported elements: views and big scans need an explicit OK."""
+    reasons = []
+    if est.get("source_is_view"):
+        reasons.append(
+            "the source is a view (every run re-executes its query over the base tables)"
+        )
+    if int(est.get("bytes_processed") or 0) > threshold:
+        reasons.append(f"it would scan about {int(est['bytes_processed']) / 1e9:.1f} GB")
+    if not reasons:
+        return None
+    return {
+        "needs_confirmation": True,
+        "reasons": reasons,
+        "estimated_bytes": int(est.get("bytes_processed") or 0),
+        "source_is_view": bool(est.get("source_is_view")),
+        "base_tables": est.get("base_tables", []),
+        "suggestion": "Consider a materialized table for the base data; views are slow and costly.",
+    }

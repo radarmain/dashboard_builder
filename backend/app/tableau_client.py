@@ -328,6 +328,15 @@ class Session:
         _check_id(view_id)
         return self._get(self._site_path(f"/views/{view_id}/data")).text
 
+    def download_workbook(self, workbook_id: str) -> bytes:
+        """The workbook file (.twbx/.twb) WITHOUT extracts. Callers must keep it off disk
+        except in a temp dir they delete, and must never log or return it."""
+        _check_id(workbook_id)
+        r = self._get(
+            self._site_path(f"/workbooks/{workbook_id}/content"), {"includeExtract": "False"}
+        )
+        return r.content
+
     def workbook_detail(self, workbook_id: str) -> dict[str, Any]:
         """Sheets, dashboards, data sources (live/extract), upstream tables, fields + formulas."""
         _check_id(workbook_id)

@@ -9,6 +9,9 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.ruff.lint.per-file-ignores]
 "scripts/*" = ["E501"]
 "backend/app/chat_*.py" = ["E501"]  # long prompt/tool-description strings
+"backend/app/tableau_import/prompt.py" = ["E501"]
+"backend/app/tableau_import/imports_store.py" = ["E501"]
+"backend/app/models.py" = ["E501"]
 
 [tool.pytest.ini_options]
 pythonpath = ["backend"]

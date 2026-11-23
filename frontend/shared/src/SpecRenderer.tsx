@@ -27,13 +27,29 @@ function Skeleton() {
   );
 }
 
+/** Placeholder for an element whose query hasn't been run yet (Builder-only lazy import). */
+function Idle({ text, onRun }: { text: string; onRun?: () => void }) {
+  return (
+    <div style={{ display: "flex", height: "100%", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: 12, textAlign: "center", fontSize: 14, color: T.onSurfaceVariant }}>
+      <span>{text}</span>
+      {onRun && (
+        <button type="button" onClick={(e) => { e.stopPropagation(); onRun(); }}
+          style={{ font: "inherit", cursor: "pointer", padding: "6px 16px", borderRadius: 999, border: `1px solid ${T.primary}`, background: "transparent", color: T.primary }}>
+          Run
+        </button>
+      )}
+    </div>
+  );
+}
+
 function Body({ el, entry }: { el: ViewElement; entry: DataEntry | undefined }) {
   if (el.type === "text") return <div style={{ whiteSpace: "pre-wrap", padding: 12, fontSize: 14, color: T.onSurface }}>{el.title}</div>;
   if (!entry) return <Notice text="No data yet. Select the element and press Run." />;
   if (entry.status === "loading") return <Skeleton />;
+  if (entry.status === "idle") return <Idle text={entry.text} onRun={entry.onRun} />;
   if (entry.status === "error") return <Notice tone="error" text={entry.message} />;
   if (el.type === "chart" && el.chart) return <ChartView chart={el.chart} data={entry.data} />;
-  if (el.type === "table") return <TableView data={entry.data} format={el.format ?? {}} />;
+  if (el.type === "table") return <TableView data={entry.data} format={el.format ?? {}} pivot={el.pivot} heatmap={el.heatmap} />;
   if (el.type === "kpi") return <KpiView data={entry.data} format={el.format ?? {}} />;
   return <Notice tone="error" text="Unsupported element" />;
 }

@@ -22,3 +22,9 @@ export const T = {
 
 /** Categorical, colorblind-friendly series palette (in order). Deliberately NOT brand colors. */
 export const CHART_COLORS = ["#1A73E8", "#E8710A", "#188038", "#A142F4", "#D93025", "#12B5CB", "#F9AB00", "#80868B"] as const;
+
+/** Heatmap ramps (value 0..1 -> RGB). diverging: red -> yellow -> green; sequential: light -> dark blue. */
+export const HEAT_STOPS = {
+  diverging: [[217, 48, 37], [249, 171, 0], [24, 128, 56]],
+  sequential: [[232, 240, 254], [26, 115, 232], [13, 51, 110]],
+} as const;

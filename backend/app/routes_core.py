@@ -10,12 +10,14 @@ from app.models import (
     AccessGrant,
     ClientCreate,
     ProjectCreate,
+    PublishIn,
     ViewCreate,
     ViewPatch,
     ViewSpec,
 )
 from app.slugs import CLIENT_SLUG_MAX, RESERVED_SLUGS
 from app.sql_validation import SqlValidationError, validate_sql
+from app.users import audit
 
 router = APIRouter(prefix="/api")
 
@@ -52,8 +54,29 @@ def need_view(c: str, p: str, v: str) -> dict[str, Any]:
 def strip_sql(spec: dict[str, Any]) -> dict[str, Any]:
     """Client users never receive SQL."""
     out = dict(spec)
-    out["elements"] = [{**e, "sql": ""} for e in spec.get("elements", [])]
+    out["elements"] = [
+        {**{k: v for k, v in e.items() if k not in ("import", "review_status")}, "sql": ""}
+        for e in spec.get("elements", [])
+    ]
     return out
+
+
+UNREVIEWED = {"unverified", "needs_review", "differs"}
+
+
+def unreviewed_imports(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Imported elements still needing an analyst and not marked reviewed."""
+    return [
+        {
+            "id": e["id"],
+            "title": e.get("title", ""),
+            "status": e["import"]["status"],
+            "sheet": e["import"].get("sheet_name", ""),
+        }
+        for e in spec.get("elements", [])
+        if (e.get("import") or {}).get("status") in UNREVIEWED
+        and e.get("review_status") != "reviewed"
+    ]
 
 
 # ---------- clients ----------
@@ -170,7 +193,9 @@ def load_published(c: str, p: str, v: str) -> dict[str, Any]:
 
 
 @router.post("/clients/{c}/projects/{p}/views/{v}/publish")
-def publish_view(c: str, p: str, v: str, user: Builder) -> dict[str, Any]:
+def publish_view(
+    c: str, p: str, v: str, user: Builder, body: PublishIn | None = None
+) -> dict[str, Any]:
     item = need_view(c, p, v)
     n = item.get("draft_revision")
     spec = store.read_revision(c, p, v, n) if n is not None else None
@@ -183,7 +208,24 @@ def publish_view(c: str, p: str, v: str, user: Builder) -> dict[str, Any]:
                 validate_sql(el["sql"], cfg.tables)
             except SqlValidationError as e:
                 raise HTTPException(400, f"element {el['id']}: {e}") from None
-    return {"published_revision": store.publish(c, p, v, user.email or user.sub, spec)}
+    who = user.email or user.sub
+    if pending := unreviewed_imports(spec):
+        if not (body and body.confirm_unreviewed):
+            raise HTTPException(
+                409,
+                {
+                    "needs_confirmation": True,
+                    "reason": "unreviewed_imports",
+                    "elements": pending,
+                },
+            )
+        audit(
+            who,
+            "publish_unreviewed_confirmed",
+            f"{v}:{','.join(x['id'] for x in pending)}"[:300],
+            c,
+        )
+    return {"published_revision": store.publish(c, p, v, who, spec)}
 
 
 @router.get("/clients/{c}/projects/{p}/views/{v}/revisions")

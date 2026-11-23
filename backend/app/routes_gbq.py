@@ -9,9 +9,16 @@ from app import gbq, store
 from app.auth import Builder, ClientAccess
 from app.config import get_settings
 from app.models import ProjectConfig, ProjectSettingsIn, QueryIn
-from app.query_runner import QueryFailed, QueryRejected, run_query
+from app.query_runner import (
+    QueryFailed,
+    QueryRejected,
+    dry_run_query,
+    needs_confirmation,
+    run_query,
+)
 from app.routes_core import load_published, need_project, need_view
 from app.sql_validation import SqlValidationError, validate_allowlist_entry
+from app.users import audit
 
 router = APIRouter(prefix="/api")
 
@@ -103,6 +110,7 @@ def put_settings(c: str, p: str, body: ProjectSettingsIn, _: Builder) -> dict[st
         bq_project=body.bq_project,
         tables=tables,
         max_bytes_billed=body.max_bytes_billed if body.max_bytes_billed else prev.max_bytes_billed,
+        tableau_link=prev.tableau_link,
     )
     store.put_project_config(c, p, cfg)
     return cfg.model_dump()
@@ -156,8 +164,26 @@ def _run(c: str, p: str, sql: str, *, refresh: bool, ttl: int | None) -> dict[st
 
 
 @router.post("/clients/{c}/projects/{p}/query")
-def query(c: str, p: str, body: QueryIn, _: Builder) -> dict[str, Any]:
+def query(c: str, p: str, body: QueryIn, user: Builder) -> dict[str, Any]:
     need_project(c, p)
+    if body.gate:  # imported elements: dry run first (free); views and big scans need a confirm
+        cfg = store.get_project_config(c, p)
+        try:
+            est = dry_run_query(cfg, body.sql)
+        except QueryRejected as e:
+            raise HTTPException(400, str(e)) from None
+        except QueryFailed as e:
+            raise HTTPException(502, str(e)) from None
+        gate = needs_confirmation(est, get_settings().import_confirm_bytes)
+        if gate and not body.confirm:
+            raise HTTPException(409, gate)  # detail = the estimate; the UI asks, then resends
+        if gate:
+            audit(
+                user.email or user.sub,
+                "query_override_confirmed",
+                f"bytes={gate['estimated_bytes']} view={gate['source_is_view']}",
+                c,
+            )
     return _run(c, p, body.sql, refresh=body.refresh, ttl=None)
 
 
