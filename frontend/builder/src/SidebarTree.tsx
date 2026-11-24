@@ -167,7 +167,7 @@ export function SidebarTree() {
           aria-label={`${n.label}${n.status ? `, ${STATUS_LABEL[n.status]}` : ""}${n.archived ? ", archived" : ""}`}
           ref={(el: HTMLElement | null) => { if (el) els.current.set(n.id, el); else els.current.delete(n.id); }}
           onKeyDown={(e) => onKey(e, n)} onFocus={(e) => { if (e.target === e.currentTarget) setFocusId(n.id); }}
-          sx={(t) => ({ display: "flex", alignItems: "center", pl: `${(n.level - 1) * 12}px`, borderRadius: "999px", outlineOffset: -2, opacity: n.archived ? 0.6 : 1, "&:focus-visible": { outline: `2px solid ${t.palette.secondary.main}` }, "&:hover .rdb-star, &:focus-within .rdb-star": { opacity: 1 } })}
+          sx={(t) => ({ display: "flex", alignItems: "center", pl: `${(n.level - 1) * 12}px`, opacity: n.archived ? 0.6 : 1, outline: "none", "&:focus-visible > .MuiListItemButton-root": { outline: `2px solid ${t.palette.secondary.main}`, outlineOffset: -2 }, "&:hover .rdb-star, &:focus-within .rdb-star": { opacity: 1 } })}
         >
           <Box sx={{ width: 24, height: 24, flexShrink: 0, display: "grid", placeItems: "center" }}>
             {loading ? <CircularProgress size={12} aria-label="Loading" /> : !n.leaf && (
@@ -180,7 +180,7 @@ export function SidebarTree() {
             component={Link} to={n.to} tabIndex={-1} selected={selected} dense
             onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
             onClick={() => { setFocusId(n.id); els.current.get(n.id)?.focus(); }}
-            sx={{ flex: 1, minWidth: 0, py: 0.5, pl: 1, gap: 1 }}
+            sx={{ flex: 1, minWidth: 0, py: 0.5, pl: 1, gap: 1, borderRadius: "999px" }}
           >
             {n.status && (
               <Box component="span" aria-hidden sx={(t) => ({
