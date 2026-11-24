@@ -88,6 +88,8 @@ GitHub Actions: `.github/workflows/deploy.yml` deploys on push to `main` (OIDC r
 ## User management (Phase 6.5)
 
 - Client users: Builder > client > **Settings** tab > Users (admin or analyst). Staff users: Builder > **Settings** (admin only).
+- Archive / delete: Builder item menus (⋯) archive and restore; admins can delete archived items permanently (type the slug). Files stay recoverable from S3 version history for 30 days. `scripts/cleanup_test_data.py [--clients ... --keep ...] [--yes]` lists/removes leftover test projects (dry run by default).
+- Favorites: star any client/project/view; they show in the sidebar. Icons: Font Awesome Free via `Icon` in `@rdb/core`.
 - One group per user (admin | analyst | client). Users are disabled, never deleted. Staff emails must be on `RDB_STAFF_EMAIL_DOMAINS` (default `radar-analytics.com`).
 - Invites are Cognito's default email (about 50/day, may land in spam; SES is a later improvement).
 - After deploying this phase once: `AWS_PROFILE=concrete .venv/bin/python scripts/backfill_client_user_mirrors.py` (idempotent; `--dry-run` to preview).

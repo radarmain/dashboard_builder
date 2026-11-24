@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Icon } from "@rdb/core";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { SpecRenderer, type DataEntry, type DataMap, type ElementData, type ElementType, type ViewElement, type ViewSpec } from "@rdb/shared";
 import { ApiError, get, post, type ChatOp, type GateInfo, type PublishGuard, type ViewSummary } from "../api";
@@ -12,6 +13,8 @@ import { RevisionsDrawer } from "./RevisionsDrawer";
 import { ViewSettingsDialog } from "./ViewSettingsDialog";
 import { publicViewUrl } from "@rdb/portal";
 import { ClientPreviewButton, CopyLinkButton, PREVIEW_BASE } from "../Preview";
+import { ArchivedBanner, FavStar, LifecycleMenu } from "../Lifecycle";
+import { invalidateAll } from "../navTree";
 
 const DEFAULT_H: Record<ElementType, number> = { chart: 6, table: 6, kpi: 3, text: 2 };
 
@@ -275,7 +278,9 @@ export function ViewEditor() {
 
   const selected = useMemo(() => spec?.elements.find((e) => e.id === selectedId) ?? null, [spec, selectedId]);
   const selectedLayout = spec?.layout.find((l) => l.element_id === selectedId) ?? null;
-  const canPublish = !!meta && meta.draft_revision !== null && meta.has_unpublished_changes && !dirty && !busy;
+  const canPublish = !!meta && meta.effective_lifecycle !== "archived" && meta.draft_revision !== null && meta.has_unpublished_changes && !dirty && !busy;
+
+  const readOnly = meta?.effective_lifecycle === "archived";
 
   if (!spec || !meta) return <Box sx={{ p: 4 }}>{error ? <ErrorBox error={error} /> : <Loading />}</Box>;
 
@@ -284,24 +289,29 @@ export function ViewEditor() {
       <AppBar position="static">
         <Toolbar sx={{ gap: 1.5, flexWrap: "wrap" }}>
           <Typography variant="h6" component="h1" noWrap sx={{ minWidth: 0 }}>{meta.name}</Typography>
+          <FavStar always item={{ kind: "view", client, project: meta.project_slug, view: meta.slug }} name={meta.name} path={`${client} / ${meta.project_slug}`} />
           {viewStatus(meta)}
           {dirty && <Badge tone="blue">Unsaved edits</Badge>}
           <Tooltip title="View settings (name, URL, description)">
-            <IconButton aria-label="View settings" size="small" onClick={() => setShowSettings(true)}>
-              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" /></svg>
+            <IconButton aria-label="View settings" size="small" disabled={readOnly} onClick={() => setShowSettings(true)}>
+              <Icon name="edit" size={16} />
             </IconButton>
           </Tooltip>
           <Box sx={{ ml: "auto", display: "flex", alignItems: "center", gap: 1 }}>
             <CopyLinkButton label="Copy client link" url={publicViewUrl(client, meta.project_slug, meta.slug)} />
-            <ClientPreviewButton to={`${PREVIEW_BASE}/c/${client}/p/${meta.project_slug}/v/${meta.slug}`} />
+            {!readOnly && <ClientPreviewButton to={`${PREVIEW_BASE}/c/${client}/p/${meta.project_slug}/v/${meta.slug}`} />}
             <Btn variant="ghost" onClick={() => setShowRevisions(true)}>Revisions</Btn>
-            <Btn variant="secondary" onClick={save} disabled={!!busy || !dirty}>{busy === "save" ? "Saving…" : "Save"}</Btn>
+            <Btn variant="secondary" onClick={save} disabled={readOnly || !!busy || !dirty}>{busy === "save" ? "Saving…" : "Save"}</Btn>
             <Btn onClick={() => void publish()} disabled={!canPublish} title={dirty ? "Save your edits first" : !meta.has_unpublished_changes ? "Nothing to publish" : ""}>
               {busy === "publish" ? "Publishing…" : "Publish"}
             </Btn>
+            <LifecycleMenu item={{ kind: "view", client, project: meta.project_slug, view: meta.slug }} name={meta.name} lifecycle={meta.lifecycle} publishedViews={meta.published_revision !== null}
+              onChanged={() => { invalidateAll(); void load(); }}
+              onDeleted={() => { invalidateAll(); dirtyRef.current = false; navigate(`/c/${client}/p/${meta.project_slug}`); }} />
           </Box>
         </Toolbar>
       </AppBar>
+      {readOnly && <Box sx={{ px: 2.5, pt: 1.5 }}><ArchivedBanner kind="view" /></Box>}
       {error && <Box sx={{ px: 2.5, pt: 1.5 }}><ErrorBox error={error} onClose={() => setError(null)} /></Box>}
       <Snackbar open={!!notice} autoHideDuration={4000} onClose={(_, reason) => reason !== "clickaway" && setNotice(null)}
         message={notice} anchorOrigin={{ vertical: "bottom", horizontal: "center" }} />

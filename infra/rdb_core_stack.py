@@ -57,7 +57,15 @@ class RdbCoreStack(Stack):
                     expiration=Duration.days(7),
                     noncurrent_version_expiration=Duration.days(1),
                     abort_incomplete_multipart_upload_after=Duration.days(1),
-                )
+                ),
+                # Version history (and deleted content) is kept 30 days: the recovery window.
+                s3.LifecycleRule(
+                    id="rdb-expire-noncurrent-clients",
+                    prefix="clients/",
+                    noncurrent_version_expiration=Duration.days(30),
+                    expired_object_delete_marker=True,
+                    abort_incomplete_multipart_upload_after=Duration.days(7),
+                ),
             ],
         )
 

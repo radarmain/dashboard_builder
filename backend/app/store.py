@@ -72,6 +72,7 @@ def create_client(slug: str, name: str, created_by: str) -> dict[str, Any]:
         "name": name,
         "created_at": now(),
         "created_by": created_by,
+        "lifecycle": "active",
     }
     _put_new(item)
     return item
@@ -114,6 +115,7 @@ def create_project(c: str, slug: str, name: str) -> dict[str, Any]:
         "slug": slug,
         "name": name,
         "status": "active",
+        "lifecycle": "active",
         "created_at": now(),
     }
     _put_new(item)
@@ -170,6 +172,7 @@ def create_view(
         "slug": slug,
         "name": name,
         "rev_counter": 0,
+        "lifecycle": "active",
         "updated_at": now(),
     }
     if description:

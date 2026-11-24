@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Icon } from "@rdb/core";
 import { SpecRenderer, columnIsNumeric, type ChartDef, type ChartKind, type ElementData, type LayoutItem, type ViewElement, type ViewSpec } from "@rdb/shared";
 import { post, type GateInfo } from "../api";
 import {
@@ -93,7 +94,7 @@ export function ElementPanel({ element, layout, queryPath, initialData, onApply,
         <Typography variant="h6" component="h2" sx={{ textTransform: "capitalize" }}>
           {el.type} <Typography component="span" variant="caption" sx={{ ...monoSx, color: "text.secondary" }}>{el.id}</Typography>
         </Typography>
-        <IconButton onClick={onClose} aria-label="Close panel">✕</IconButton>
+        <IconButton onClick={onClose} aria-label="Close panel"><Icon name="close" /></IconButton>
       </Box>
 
       <Box sx={{ display: "grid", gap: 2.5, p: 2.5 }}>

@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Box, CircularProgress, Collapse, IconButton, List, ListItemButton, TextField, Typography } from "@mui/material";
+import { Icon } from "@rdb/core";
 import { Btn } from "./ui";
 import {
-  clientsEntry, ensureClients, ensureProjects, ensureViews, projectsEntry, useNavCache, viewsEntry, type Entry,
+  clientsEntry, ensureClients, ensureFavorites, ensureProjects, ensureViews, favoritesEntry, projectsEntry, shown, useNavCache, viewsEntry, type Entry,
 } from "./navTree";
+import { FavStar, ShowArchivedToggle, type ItemRef } from "./Lifecycle";
+import type { Favorite } from "./api";
 
 type Status = "draft" | "published" | "changes";
 interface TNode {
   id: string; kind: "client" | "project" | "view"; label: string; slug: string; to: string; level: number;
-  status?: Status; parent?: string; kids: TNode[]; entry?: Entry<unknown>; retry?: () => void; leaf: boolean;
+  status?: Status; archived?: boolean; parent?: string; kids: TNode[]; entry?: Entry<unknown>; retry?: () => void; leaf: boolean;
 }
 
 const STORE_KEY = "rdb.sidebar.expanded";
@@ -30,24 +33,26 @@ const textSx = { fontWeight: 500, fontSize: "0.8125rem", lineHeight: "18px" };
 function buildTree(q: string): TNode[] {
   const hit = (n: { label: string; slug: string }) => !q || n.label.toLowerCase().includes(q) || n.slug.toLowerCase().includes(q);
   const out: TNode[] = [];
-  for (const c of clientsEntry().data ?? []) {
+  for (const c of (clientsEntry().data ?? []).filter(shown)) {
     const ce = projectsEntry(c.slug);
     const cn: TNode = {
       id: `c:${c.slug}`, kind: "client", label: c.name || c.slug, slug: c.slug, to: `/c/${c.slug}`, level: 1, kids: [],
       entry: ce as Entry<unknown>, retry: () => ensureProjects(c.slug, true), leaf: false,
+      archived: c.effective_lifecycle === "archived",
     };
     const cSelf = hit(cn);
-    for (const p of ce.data ?? []) {
+    for (const p of (ce.data ?? []).filter(shown)) {
       const ve = viewsEntry(c.slug, p.slug);
       const pn: TNode = {
         id: `p:${c.slug}/${p.slug}`, kind: "project", label: p.name || p.slug, slug: p.slug, to: `/c/${c.slug}/p/${p.slug}`, level: 2,
         parent: cn.id, kids: [], entry: ve as Entry<unknown>, retry: () => ensureViews(c.slug, p.slug, true), leaf: false,
+        archived: p.effective_lifecycle === "archived",
       };
       const pSelf = hit(pn);
-      for (const v of ve.data ?? []) {
+      for (const v of (ve.data ?? []).filter(shown)) {
         const vn: TNode = {
           id: `v:${c.slug}/${p.slug}/${v.slug}`, kind: "view", label: v.name || v.slug, slug: v.slug,
-          to: `/c/${c.slug}/p/${p.slug}/v/${v.slug}`, level: 3, parent: pn.id, kids: [], leaf: true,
+          to: `/c/${c.slug}/p/${p.slug}/v/${v.slug}`, level: 3, parent: pn.id, kids: [], leaf: true, archived: v.effective_lifecycle === "archived",
           status: v.published_revision === null ? "draft" : v.has_unpublished_changes ? "changes" : "published",
         };
         if (!q || cSelf || pSelf || hit(vn)) pn.kids.push(vn);
@@ -57,6 +62,34 @@ function buildTree(q: string): TNode[] {
     if (!q || cSelf || cn.kids.length) out.push(cn);
   }
   return out;
+}
+
+const favTo = (f: Favorite) =>
+  f.type === "client" ? `/c/${f.client}` : f.type === "project" ? `/c/${f.client}/p/${f.project}` : `/c/${f.client}/p/${f.project}/v/${f.view}`;
+
+function FavoritesSection({ favs, pathname }: { favs: Favorite[]; pathname: string }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <Box component="section" aria-label="Favorites" sx={{ flex: "none", maxHeight: "30%", overflow: "auto", mb: 0.5 }}>
+      <ListItemButton dense onClick={() => setOpen((o) => !o)} aria-expanded={open} sx={{ gap: 1 }}>
+        <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
+        <Typography sx={textSx}>Favorites</Typography>
+      </ListItemButton>
+      <Collapse in={open} unmountOnExit>
+        <List disablePadding dense>
+          {favs.map((f) => (
+            <ListItemButton key={`${f.type}/${f.client}/${f.project ?? ""}/${f.view ?? ""}`} component={Link} to={favTo(f)} dense selected={pathname === favTo(f)} sx={{ gap: 1, pl: 2 }}>
+              <Icon name={f.type === "client" ? "client" : f.type === "project" ? "project" : "view"} size={13} />
+              <Box sx={{ minWidth: 0 }}>
+                <Typography noWrap title={f.name} sx={textSx}>{f.name}</Typography>
+                {f.path && <Typography noWrap variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: "14px" }}>{f.path}</Typography>}
+              </Box>
+            </ListItemButton>
+          ))}
+        </List>
+      </Collapse>
+    </Box>
+  );
 }
 
 export function SidebarTree() {
@@ -82,6 +115,7 @@ export function SidebarTree() {
   // Lazy loading: clients now, children when a node is expanded (also refetches stale entries).
   useEffect(() => {
     ensureClients();
+    ensureFavorites();
     for (const k of expanded) {
       if (k.startsWith("c:")) ensureProjects(k.slice(2));
       else if (k.startsWith("p:")) { const [c, p] = k.slice(2).split("/"); ensureViews(c, p); }
@@ -130,17 +164,15 @@ export function SidebarTree() {
         <Box
           role="treeitem" tabIndex={tabId === n.id ? 0 : -1} aria-level={n.level} aria-selected={selected}
           aria-expanded={n.leaf ? undefined : open}
-          aria-label={n.status ? `${n.label}, ${STATUS_LABEL[n.status]}` : n.label}
+          aria-label={`${n.label}${n.status ? `, ${STATUS_LABEL[n.status]}` : ""}${n.archived ? ", archived" : ""}`}
           ref={(el: HTMLElement | null) => { if (el) els.current.set(n.id, el); else els.current.delete(n.id); }}
           onKeyDown={(e) => onKey(e, n)} onFocus={(e) => { if (e.target === e.currentTarget) setFocusId(n.id); }}
-          sx={(t) => ({ display: "flex", alignItems: "center", pl: `${(n.level - 1) * 12}px`, borderRadius: "999px", outlineOffset: -2, "&:focus-visible": { outline: `2px solid ${t.palette.secondary.main}` } })}
+          sx={(t) => ({ display: "flex", alignItems: "center", pl: `${(n.level - 1) * 12}px`, borderRadius: "999px", outlineOffset: -2, opacity: n.archived ? 0.6 : 1, "&:focus-visible": { outline: `2px solid ${t.palette.secondary.main}` }, "&:hover .rdb-star, &:focus-within .rdb-star": { opacity: 1 } })}
         >
           <Box sx={{ width: 24, height: 24, flexShrink: 0, display: "grid", placeItems: "center" }}>
             {loading ? <CircularProgress size={12} aria-label="Loading" /> : !n.leaf && (
               <IconButton size="small" tabIndex={-1} aria-hidden onClick={() => toggle(n)} sx={{ p: 0.25 }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 120ms" }}>
-                  <path d="M9 6l6 6-6 6" />
-                </svg>
+                <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
               </IconButton>
             )}
           </Box>
@@ -156,8 +188,10 @@ export function SidebarTree() {
                 bgcolor: { draft: t.palette.tokens.outline, changes: t.palette.tokens.warning, published: t.palette.tokens.success }[n.status!],
               })} />
             )}
-            <Typography noWrap title={n.label} sx={{ ...textSx, fontWeight: selected || onPath(n) ? 600 : 500 }}>{n.label}</Typography>
+            <Icon name={n.archived ? "archive" : n.kind === "client" ? "client" : n.kind === "project" ? (open ? "project-open" : "project") : "view"} size={13} />
+            <Typography noWrap title={n.label} sx={{ ...textSx, fontWeight: selected || onPath(n) ? 600 : 500, fontStyle: n.archived ? "italic" : "normal" }}>{n.label}</Typography>
           </ListItemButton>
+          <FavStar item={itemOf(n)} name={n.label} path={pathOf(n)} />
         </Box>
         {!n.leaf && (
           <Collapse in={open} timeout="auto" unmountOnExit>
@@ -182,6 +216,7 @@ export function SidebarTree() {
   }
 
   const ce = clientsEntry();
+  const favs = (favoritesEntry().data ?? []).filter((f) => !q || f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q));
   return (
     <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
       <Box sx={{ px: 0.5, pb: 1 }}>
@@ -191,6 +226,8 @@ export function SidebarTree() {
           slotProps={{ htmlInput: { "aria-label": "Filter the sidebar tree by name" } }}
         />
       </Box>
+      <ShowArchivedToggle />
+      {favs.length > 0 && <FavoritesSection favs={favs} pathname={pathname} />}
       <ListItemButton component={Link} to="/" selected={pathname === "/"} dense sx={{ flex: "none" }}>
         <Typography sx={textSx}>Clients</Typography>
       </ListItemButton>
@@ -210,6 +247,13 @@ export function SidebarTree() {
     </Box>
   );
 }
+
+/** Ids are `c:<client>`, `p:<client>/<project>`, `v:<client>/<project>/<view>`. */
+function itemOf(n: TNode): ItemRef {
+  const [c, p, v] = n.id.slice(2).split("/");
+  return { kind: n.kind, client: c, project: p, view: v };
+}
+const pathOf = (n: TNode) => { const [c, p] = n.id.slice(2).split("/"); return n.kind === "client" ? "" : n.kind === "project" ? c : `${c} / ${p}`; };
 
 function isAncestor(n: TNode, c?: string, p?: string): boolean {
   return (n.kind === "client" && n.slug === c) || (n.kind === "project" && n.id === `p:${c}/${p}`);

@@ -1,10 +1,10 @@
 """Clients / projects / views / revisions / admin access. All under /api."""
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 
-from app import cognito, renames, store
+from app import cognito, lifecycle, renames, store
 from app.auth import Admin, Builder, ClientAccess, CurrentUser
 from app.models import (
     AccessGrant,
@@ -26,7 +26,10 @@ HIDDEN = {"PK", "SK", "rev_counter"}
 
 
 def clean(item: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in item.items() if k not in HIDDEN}
+    out = {k: v for k, v in item.items() if k not in HIDDEN}
+    out["lifecycle"] = lifecycle.state(item)
+    out.setdefault("effective_lifecycle", out["lifecycle"])
+    return out
 
 
 def canon(c: str, p: str, v: str | None = None) -> tuple[str, str]:
@@ -36,27 +39,49 @@ def canon(c: str, p: str, v: str | None = None) -> tuple[str, str]:
     return p2, v2 or ""
 
 
-def need_client(c: str) -> dict[str, Any]:
+Mode = Literal["read", "write", "portal"]
+
+
+def _gate(eff: str, mode: Mode, what: str) -> None:
+    """deleting hides the item everywhere; archived is readable by builders, read-only for
+    them (409), and invisible (404) to the portal."""
+    if eff == lifecycle.DELETING or (eff == lifecycle.ARCHIVED and mode == "portal"):
+        raise HTTPException(404, f"{what} not found")
+    if eff == lifecycle.ARCHIVED and mode == "write":
+        raise HTTPException(409, "archived")
+
+
+def _with_eff(item: dict[str, Any], eff: str) -> dict[str, Any]:
+    return {**item, "effective_lifecycle": eff}
+
+
+def need_client(c: str, mode: Mode = "read") -> dict[str, Any]:
     item = store.get_client(c)
     if not item:
         raise HTTPException(404, "client not found")
-    return item
+    eff = lifecycle.effective(item)
+    _gate(eff, mode, "client")
+    return _with_eff(item, eff)
 
 
-def need_project(c: str, p: str) -> dict[str, Any]:
-    need_client(c)
+def need_project(c: str, p: str, mode: Mode = "read") -> dict[str, Any]:
+    parent = need_client(c, mode)
     item = store.get_project(c, p)
     if not item:
         raise HTTPException(404, "project not found")
-    return item
+    eff = lifecycle.combine(parent["effective_lifecycle"], lifecycle.state(item))
+    _gate(eff, mode, "project")
+    return _with_eff(item, eff)
 
 
-def need_view(c: str, p: str, v: str) -> dict[str, Any]:
-    need_project(c, p)
+def need_view(c: str, p: str, v: str, mode: Mode = "read") -> dict[str, Any]:
+    parent = need_project(c, p, mode)
     item = store.get_view(c, p, v)
     if not item:
         raise HTTPException(404, "view not found")
-    return item
+    eff = lifecycle.combine(parent["effective_lifecycle"], lifecycle.state(item))
+    _gate(eff, mode, "view")
+    return _with_eff(item, eff)
 
 
 def strip_sql(spec: dict[str, Any]) -> dict[str, Any]:
@@ -87,6 +112,20 @@ def unreviewed_imports(spec: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _children(
+    parent: dict[str, Any], items: list[dict[str, Any]], include_archived: bool
+) -> list[dict[str, Any]]:
+    """Children of `parent` for a list endpoint. Deleting items never show; archived ones (own
+    or via the parent) only with include_archived. Each gets its effective_lifecycle."""
+    out = []
+    for i in items:
+        eff = lifecycle.combine(parent["effective_lifecycle"], lifecycle.state(i))
+        if eff == lifecycle.DELETING or (eff == lifecycle.ARCHIVED and not include_archived):
+            continue
+        out.append(clean({**i, "effective_lifecycle": eff}))
+    return out
+
+
 # ---------- clients ----------
 @router.get("/slug-rules")
 def slug_rules(_: Builder) -> dict[str, Any]:
@@ -98,8 +137,13 @@ def slug_rules(_: Builder) -> dict[str, Any]:
 
 
 @router.get("/clients")
-def list_clients(_: Builder) -> list[dict[str, Any]]:
-    return [clean(i) for i in store.list_clients()]
+def list_clients(_: Builder, include_archived: bool = False) -> list[dict[str, Any]]:
+    return [
+        clean(i)
+        for i in store.list_clients()
+        if lifecycle.state(i) == lifecycle.ACTIVE
+        or (include_archived and lifecycle.state(i) == lifecycle.ARCHIVED)
+    ]
 
 
 @router.post("/clients", status_code=201)
@@ -117,14 +161,13 @@ def get_client(c: str, _: Builder) -> dict[str, Any]:
 
 # ---------- projects ----------
 @router.get("/clients/{c}/projects")
-def list_projects(c: str, _: Builder) -> list[dict[str, Any]]:
-    need_client(c)
-    return [clean(i) for i in store.list_projects(c)]
+def list_projects(c: str, _: Builder, include_archived: bool = False) -> list[dict[str, Any]]:
+    return _children(need_client(c), store.list_projects(c), include_archived)
 
 
 @router.post("/clients/{c}/projects", status_code=201)
 def create_project(c: str, body: ProjectCreate, _: Builder) -> dict[str, Any]:
-    need_client(c)
+    need_client(c, "write")
     if not renames.project_slug_free(c, body.slug):
         raise HTTPException(409, "project slug already exists (or is an old link of a project)")
     try:
@@ -136,7 +179,7 @@ def create_project(c: str, body: ProjectCreate, _: Builder) -> dict[str, Any]:
 @router.patch("/clients/{c}/projects/{p}")
 def patch_project(c: str, p: str, body: ProjectPatch, user: Builder) -> dict[str, Any]:
     p = canon(c, p)[0]
-    item = need_project(c, p)
+    item = need_project(c, p, "write")
     try:
         if body.slug and body.slug != p:
             item = renames.rename_project(c, p, body.slug, user.sub)
@@ -160,16 +203,17 @@ def get_project(c: str, p: str, _: Builder) -> dict[str, Any]:
 
 # ---------- views ----------
 @router.get("/clients/{c}/projects/{p}/views")
-def list_views(c: str, p: str, _: Builder) -> list[dict[str, Any]]:
+def list_views(c: str, p: str, _: Builder, include_archived: bool = False) -> list[dict[str, Any]]:
     p = canon(c, p)[0]
-    need_project(c, p)
-    return [clean(store.view_public(i)) for i in store.list_views(c, p)]
+    return _children(
+        need_project(c, p), [store.view_public(i) for i in store.list_views(c, p)], include_archived
+    )
 
 
 @router.post("/clients/{c}/projects/{p}/views", status_code=201)
 def create_view(c: str, p: str, body: ViewCreate, _: Builder) -> dict[str, Any]:
     p = canon(c, p)[0]
-    need_project(c, p)
+    need_project(c, p, "write")
     if not renames.view_slug_free(c, p, body.slug):
         raise HTTPException(409, "view slug already exists (or is an old link of a view)")
     try:
@@ -188,7 +232,7 @@ def get_view(c: str, p: str, v: str, _: Builder) -> dict[str, Any]:
 @router.patch("/clients/{c}/projects/{p}/views/{v}")
 def patch_view(c: str, p: str, v: str, body: ViewPatch, user: Builder) -> dict[str, Any]:
     p, v = canon(c, p, v)
-    need_view(c, p, v)
+    need_view(c, p, v, "write")
     try:
         if body.slug and body.slug != v:
             renames.rename_view(c, p, v, body.slug, user.sub)
@@ -208,7 +252,7 @@ def patch_view(c: str, p: str, v: str, body: ViewPatch, user: Builder) -> dict[s
 @router.post("/clients/{c}/projects/{p}/views/{v}/save")
 def save_view(c: str, p: str, v: str, spec: ViewSpec, user: Builder) -> dict[str, Any]:
     p, v = canon(c, p, v)
-    need_view(c, p, v)
+    need_view(c, p, v, "write")
     n = store.write_revision(c, p, v, spec, user.email or user.sub)
     return {"revision": n, "draft_revision": n}
 
@@ -227,12 +271,12 @@ def get_draft(c: str, p: str, v: str, _: Builder) -> dict[str, Any]:
 @router.get("/clients/{client_slug}/projects/{p}/views/{v}/published")
 def get_published(client_slug: str, p: str, v: str, user: ClientAccess) -> dict[str, Any]:
     p, v = canon(client_slug, p, v)
-    spec = load_published(client_slug, p, v)
+    spec = load_published(client_slug, p, v, "read" if user.is_builder else "portal")
     return spec if user.is_builder else strip_sql(spec)
 
 
-def load_published(c: str, p: str, v: str) -> dict[str, Any]:
-    need_view(c, p, v)
+def load_published(c: str, p: str, v: str, mode: Mode = "read") -> dict[str, Any]:
+    need_view(c, p, v, mode)
     ptr = store.s3_get_json(f"{store.view_prefix(c, p, v)}published.json")
     spec = store.read_revision(c, p, v, ptr["revision"]) if ptr else None
     if not spec:
@@ -246,7 +290,7 @@ def publish_view(
     c: str, p: str, v: str, user: Builder, body: PublishIn | None = None
 ) -> dict[str, Any]:
     p, v = canon(c, p, v)
-    item = need_view(c, p, v)
+    item = need_view(c, p, v, "write")
     n = item.get("draft_revision")
     spec = store.read_revision(c, p, v, n) if n is not None else None
     if not spec:
@@ -300,7 +344,7 @@ def list_revisions(c: str, p: str, v: str, _: Builder) -> list[dict[str, Any]]:
 @router.post("/clients/{c}/projects/{p}/views/{v}/revisions/{n}/restore")
 def restore_revision(c: str, p: str, v: str, n: int, user: Builder) -> dict[str, Any]:
     p, v = canon(c, p, v)
-    need_view(c, p, v)
+    need_view(c, p, v, "write")
     old = store.read_revision(c, p, v, n)
     if not old:
         raise HTTPException(404, "revision not found")
@@ -311,7 +355,7 @@ def restore_revision(c: str, p: str, v: str, n: int, user: Builder) -> dict[str,
 # ---------- admin: client user access (maintains the CLIENT#/USER# mirror too) ----------
 @router.post("/admin/access", status_code=201)
 def grant_access(body: AccessGrant, user: Admin) -> dict[str, str]:
-    need_client(body.client_slug)
+    need_client(body.client_slug, "write")
     target = cognito.get_by_sub(body.user_sub)
     if not target:
         raise HTTPException(404, "user not found")

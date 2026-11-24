@@ -5,4 +5,5 @@ export * from "./auth";
 export * from "./AuthContext";
 export * from "./api";
 export * from "./ui";
+export * from "./Icon";
 export { startApp } from "./bootstrap";
