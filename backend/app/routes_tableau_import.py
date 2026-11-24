@@ -28,7 +28,7 @@ BASE = "/clients/{c}/projects/{p}"
 @router.put(BASE + "/tableau-link")
 def put_link(c: str, p: str, body: TableauLink, user: Builder) -> dict[str, Any]:
     p = canon(c, p)[0]
-    need_project(c, p)
+    need_project(c, p, "write")
     cfg = store.get_project_config(c, p)
     cfg.tableau_link = body
     store.put_project_config(c, p, cfg)
@@ -45,7 +45,7 @@ def get_link(c: str, p: str, _: Builder) -> dict[str, Any] | None:
 
 
 def _linked(c: str, p: str) -> TableauLink:
-    need_project(c, p)
+    need_project(c, p, "write")  # plan / run / verify: archived projects are read-only
     link = store.get_project_config(c, p).tableau_link
     if not link:
         raise HTTPException(400, "no Tableau workbook is linked to this project")

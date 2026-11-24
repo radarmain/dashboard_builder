@@ -102,7 +102,7 @@ def _events(c: str, p: str, name: str, body: ChatIn) -> Iterator[dict[str, Any]]
 @router.post("/clients/{c}/projects/{p}/views/{v}/chat")
 def chat(c: str, p: str, v: str, body: ChatIn, _: Builder) -> StreamingResponse:
     p, v = canon(c, p, v)
-    item = need_view(c, p, v)
+    item = need_view(c, p, v, "write")
     return StreamingResponse(
         _sse(_events(c, p, item.get("name", v), body)),
         media_type="text/event-stream",

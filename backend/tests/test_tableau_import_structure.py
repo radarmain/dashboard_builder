@@ -304,7 +304,7 @@ def spec_dict(status: str | None, reviewed: bool = False) -> dict[str, Any]:
 def pub(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     st: dict[str, Any] = {"spec": spec_dict("unverified"), "published": 0, "audits": []}
     s = monkeypatch.setattr
-    s(routes_core, "need_view", lambda c, p, v: {"draft_revision": 1})
+    s(routes_core, "need_view", lambda c, p, v, mode="read": {"draft_revision": 1})
     s(store, "read_revision", lambda c, p, v, n: st["spec"])
     s(store, "get_project_config", lambda c, p: SimpleNamespace(tables=["p.d.t"]))
 

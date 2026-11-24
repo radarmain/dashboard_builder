@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from app import store, users
+from app import lifecycle, store, users
 from app.auth import Admin, Builder
 from app.users import UserError
 
@@ -34,9 +34,12 @@ def _run(fn: Any, *a: Any, **kw: Any) -> Any:
         raise HTTPException(e.status, e.message) from None
 
 
-def _need_client(c: str) -> None:
-    if not store.get_client(c):
+def _need_client(c: str, write: bool = False) -> None:
+    item = store.get_client(c)
+    if not item or lifecycle.state(item) == lifecycle.DELETING:
         raise HTTPException(404, "client not found")
+    if write and lifecycle.state(item) == lifecycle.ARCHIVED:
+        raise HTTPException(409, "archived")
 
 
 # ---------- per client: admin or analyst ----------
@@ -48,20 +51,20 @@ def client_users(c: str, _: Builder) -> list[dict[str, Any]]:
 
 @router.post("/clients/{c}/users", status_code=201)
 def add_client_user(c: str, body: ClientUserCreate, user: Builder) -> dict[str, Any]:
-    _need_client(c)
+    _need_client(c, True)
     return _run(users.add_client_user, user.sub, c, body.email, body.name)
 
 
 @router.delete("/clients/{c}/users/{sub}")
 def remove_client_user(c: str, sub: str, user: Builder) -> dict[str, str]:
-    _need_client(c)
+    _need_client(c, True)
     _run(users.remove_client_access, user.sub, c, sub)
     return {"removed": "ok"}
 
 
 @router.post("/clients/{c}/users/{sub}/resend-invite")
 def resend_client_invite(c: str, sub: str, user: Builder) -> dict[str, str]:
-    _need_client(c)
+    _need_client(c, True)
     return _run(users.resend_client_invite, user.sub, c, sub)
 
 

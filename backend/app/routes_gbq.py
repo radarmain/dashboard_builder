@@ -16,7 +16,7 @@ from app.query_runner import (
     needs_confirmation,
     run_query,
 )
-from app.routes_core import canon, load_published, need_project, need_view
+from app.routes_core import Mode, canon, load_published, need_project, need_view
 from app.sql_validation import SqlValidationError, validate_allowlist_entry
 from app.users import audit
 
@@ -70,7 +70,7 @@ def schema_key(c: str, p: str, dataset: str, table: str) -> str:
 @router.put("/clients/{c}/projects/{p}/settings")
 def put_settings(c: str, p: str, body: ProjectSettingsIn, _: Builder) -> dict[str, Any]:
     p = canon(c, p)[0]
-    need_project(c, p)
+    need_project(c, p, "write")
     _ident(body.bq_project)
     if not body.tables:
         raise HTTPException(400, "select at least one table")
@@ -126,8 +126,8 @@ def get_settings_route(c: str, p: str, _: Builder) -> dict[str, Any]:
     return cfg
 
 
-def _snapshot(c: str, p: str, dt: str) -> tuple[str, dict[str, Any]]:
-    need_project(c, p)
+def _snapshot(c: str, p: str, dt: str, mode: Mode = "read") -> tuple[str, dict[str, Any]]:
+    need_project(c, p, mode)
     dataset, _, table = dt.partition(".")
     _ident(dataset, table or "x")
     key = schema_key(c, p, dataset, table)
@@ -146,7 +146,7 @@ def get_schema(c: str, p: str, dt: str, _: Builder) -> dict[str, Any]:
 @router.put("/clients/{c}/projects/{p}/schemas/{dt}/descriptions")
 def put_descriptions(c: str, p: str, dt: str, body: dict[str, str], _: Builder) -> dict[str, Any]:
     p = canon(c, p)[0]
-    key, snap = _snapshot(c, p, dt)
+    key, snap = _snapshot(c, p, dt, "write")
     cols = {col["name"] for col in snap["columns"]}
     unknown = sorted(set(body) - cols)
     if unknown:
@@ -170,7 +170,7 @@ def _run(c: str, p: str, sql: str, *, refresh: bool, ttl: int | None) -> dict[st
 @router.post("/clients/{c}/projects/{p}/query")
 def query(c: str, p: str, body: QueryIn, user: Builder) -> dict[str, Any]:
     p = canon(c, p)[0]
-    need_project(c, p)
+    need_project(c, p, "write")
     if body.gate:  # imported elements: dry run first (free); views and big scans need a confirm
         cfg = store.get_project_config(c, p)
         try:
@@ -198,17 +198,19 @@ def element_data(
 ) -> dict[str, Any]:
     c = client_slug
     p, v = canon(c, p, v)
-    # ClientAccess (authorization) has already run before anything below touches the cache.
+    # ClientAccess (authorization) and the lifecycle check run before anything touches the cache.
+    # Archived: builders get 409 (no query runs), client users get 404.
+    mode: Mode = "write" if user.is_builder else "portal"
     if draft:
         if not user.is_builder:
             raise HTTPException(403, "builder access required for draft")
-        item = need_view(c, p, v)
+        item = need_view(c, p, v, mode)
         n = item.get("draft_revision")
         spec = store.read_revision(c, p, v, n) if n is not None else None
         if not spec:
             raise HTTPException(404, "no draft")
     else:
-        spec = load_published(c, p, v)
+        spec = load_published(c, p, v, mode)
     el = next((e for e in spec.get("elements", []) if e["id"] == element_id), None)
     if not el or not el.get("sql"):
         raise HTTPException(404, "element not found")
