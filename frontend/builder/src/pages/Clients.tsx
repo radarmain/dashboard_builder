@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Box, CardActionArea, Tab, Tabs, Dialog, DialogActions, DialogContent, DialogTitle, TextField, Typography } from "@mui/material";
+import { Icon } from "@rdb/core";
 import { get, post, type Client, type Project } from "../api";
+import { ArchivedBanner, FavStar, LifecycleMenu, ShowArchivedToggle } from "../Lifecycle";
+import { invalidateAll, shown, useNavCache } from "../navTree";
 import { publicClientUrl } from "@rdb/portal";
 import { ClientPreviewButton, CopyLinkButton, PREVIEW_BASE } from "../Preview";
 import { ClientSettings } from "./ClientSettings";
@@ -56,12 +59,12 @@ function NameSlugForm({ label, onSubmit, onCancel, withDescription, slugRule }: 
 }
 
 /** One clickable list card (name + mono subtitle + optional trailing node). */
-export function LinkCard({ to, title, subtitle, description, trailing }: { to: string; title: string; subtitle: string; description?: string; trailing?: React.ReactNode }) {
+export function LinkCard({ to, title, subtitle, description, trailing, archived }: { to: string; title: string; subtitle: string; description?: string; trailing?: React.ReactNode; archived?: boolean }) {
   return (
-    <Card sx={{ p: 0 }}>
+    <Card sx={{ p: 0, opacity: archived ? 0.6 : 1 }}>
       <CardActionArea component={Link} to={to} sx={{ p: 2.5, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2 }}>
         <Box sx={{ minWidth: 0 }}>
-          <Typography variant="subtitle1" noWrap>{title}</Typography>
+          <Typography variant="subtitle1" noWrap>{archived && <Icon name="archive" size={13} />} {title}</Typography>
           <Typography variant="caption" noWrap sx={{ ...monoSx, color: "text.secondary", display: "block" }}>{subtitle}</Typography>
           {description && (
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{description}</Typography>
@@ -81,9 +84,10 @@ export function ClientsPage() {
   const [adding, setAdding] = useState(false);
   const [rules, setRules] = useState<{ reserved: string[]; client_slug_max: number } | null>(null);
   const nav = useNavigate();
+  useNavCache(); // re-render when "Show archived" flips
 
   useEffect(() => {
-    get<Client[]>("/clients").then(setClients).catch((e) => setError(errMsg(e)));
+    get<Client[]>("/clients?include_archived=true").then(setClients).catch((e) => setError(errMsg(e)));
     get<{ reserved: string[]; client_slug_max: number }>("/slug-rules").then(setRules).catch(() => {});
   }, []);
 
@@ -95,16 +99,16 @@ export function ClientsPage() {
 
   return (
     <Box sx={{ p: 4 }}>
-      <PageHeader title="Clients" action={<Btn onClick={() => setAdding(true)}>Add client</Btn>} />
+      <PageHeader title="Clients" action={<Box sx={{ display: "flex", alignItems: "center", gap: 2 }}><ShowArchivedToggle /><Btn onClick={() => setAdding(true)}>Add client</Btn></Box>} />
       {adding && (
         <NameSlugForm label="Client" slugRule={clientSlugRule} onCancel={() => setAdding(false)}
           onSubmit={async (name, slug) => { await post("/clients", { name, slug }); nav(`/c/${slug}`); }} />
       )}
       <ErrorBox error={error} />
       {clients === null && !error && <Loading />}
-      {clients?.length === 0 && <Typography color="text.secondary">No clients yet.</Typography>}
+      {clients && clients.filter(shown).length === 0 && <Typography color="text.secondary">No clients yet.</Typography>}
       <Box sx={gridSx}>
-        {clients?.map((c) => <LinkCard key={c.slug} to={`/c/${c.slug}`} title={c.name} subtitle={c.slug} />)}
+        {clients?.filter(shown).map((c) => <LinkCard key={c.slug} to={`/c/${c.slug}`} title={c.name} subtitle={c.slug} archived={c.effective_lifecycle === "archived"} />)}
       </Box>
     </Box>
   );
@@ -119,22 +123,31 @@ export function ClientPage() {
   const [params, setParams] = useSearchParams();
   const tab = params.get("tab") === "settings" ? "settings" : "projects";
   const nav = useNavigate();
+  useNavCache();
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     get<Client>(`/clients/${client}`).then(setInfo).catch((e) => setError(errMsg(e)));
-    get<Project[]>(`/clients/${client}/projects`).then(setProjects).catch((e) => setError(errMsg(e)));
-  }, [client]);
+    get<Project[]>(`/clients/${client}/projects?include_archived=true`).then(setProjects).catch((e) => setError(errMsg(e)));
+  }, [client, reload]);
+  const archived = info?.effective_lifecycle === "archived";
 
   return (
     <Box sx={{ p: 4 }}>
-      <PageHeader title={info?.name ?? client} subtitle="Projects (dashboards) for this client"
+      <PageHeader title={<>{info?.name ?? client} <FavStar always size={18} item={{ kind: "client", client }} name={info?.name ?? client} path="" /></>} subtitle="Projects (dashboards) for this client"
         action={
-          <Box sx={{ display: "flex", gap: 1 }}>
+          <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
             <CopyLinkButton label="Copy client link" url={publicClientUrl(client)} />
             <ClientPreviewButton to={`${PREVIEW_BASE}/c/${client}`} />
-            {tab === "projects" && <Btn onClick={() => setAdding(true)}>Create project</Btn>}
+            {tab === "projects" && <Btn onClick={() => setAdding(true)} disabled={archived}>Create project</Btn>}
+            {info && (
+              <LifecycleMenu item={{ kind: "client", client }} name={info.name} lifecycle={info.lifecycle}
+                onChanged={() => { invalidateAll(); setReload((n) => n + 1); }}
+                onDeleted={() => { invalidateAll(); nav("/"); }} />
+            )}
           </Box>
         } />
+      {archived && <ArchivedBanner kind="client" />}
       <Tabs value={tab} onChange={(_, v: string) => setParams(v === "settings" ? { tab: "settings" } : {})} sx={{ mb: 3, borderBottom: 1, borderColor: "divider" }}>
         <Tab value="projects" label="Projects" />
         <Tab value="settings" label="Settings" />
@@ -151,9 +164,9 @@ export function ClientPage() {
       </Typography>
       <ErrorBox error={error} />
       {projects === null && !error && <Loading />}
-      {projects?.length === 0 && <Typography color="text.secondary">No projects yet.</Typography>}
+      {projects && projects.filter(shown).length === 0 && <Typography color="text.secondary">No projects yet.</Typography>}
       <Box sx={gridSx}>
-        {projects?.map((p) => <LinkCard key={p.slug} to={`/c/${client}/p/${p.slug}`} title={p.name} subtitle={`${publicClientUrl(client).replace("https://", "")}/${p.slug}`} />)}
+        {projects?.filter(shown).map((p) => <LinkCard key={p.slug} to={`/c/${client}/p/${p.slug}`} title={p.name} archived={p.effective_lifecycle === "archived"} subtitle={`${publicClientUrl(client).replace("https://", "")}/${p.slug}`} />)}
       </Box>
         </>
       )}

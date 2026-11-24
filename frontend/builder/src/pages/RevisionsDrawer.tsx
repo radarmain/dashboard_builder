@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Icon } from "@rdb/core";
 import { Box, Drawer, IconButton, List, ListItem, Typography } from "@mui/material";
 import { get, post, type Revision } from "../api";
 import { Badge, Btn, Card, ConfirmDialog, ErrorBox, Loading, errMsg } from "../ui";
@@ -30,7 +31,7 @@ export function RevisionsDrawer({ viewPath, dirty, onClose, onRestored }: {
       <Drawer anchor="right" open onClose={onClose} slotProps={{ paper: { sx: { width: 400, maxWidth: "100vw", p: 3, borderRadius: "16px 0 0 16px" } } }}>
         <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
           <Typography variant="h5" component="h2">Revisions</Typography>
-          <IconButton onClick={onClose} aria-label="Close revisions">✕</IconButton>
+          <IconButton onClick={onClose} aria-label="Close revisions"><Icon name="close" /></IconButton>
         </Box>
         <Typography variant="caption" sx={{ color: "text.secondary", mb: 2, display: "block" }}>
           The last 10 saves. Restoring creates a new draft revision; old revisions are never changed.

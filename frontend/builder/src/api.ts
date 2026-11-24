@@ -10,8 +10,17 @@ export const patch = async <T,>(p: string, b: unknown) => { const r = await core
 export const del = async <T,>(p: string) => { const r = await coreDel<T>(p); invalidateForMutation("DELETE", p); return r; };
 
 // ---- API types (mirror backend responses) ----
-export interface Client { slug: string; name: string; created_at: string; created_by: string }
-export interface Project { client_slug: string; slug: string; name: string; status: string; created_at: string; config?: ProjectConfig }
+export type Lifecycle = "active" | "archived";
+/** `lifecycle` is the item's own state; `effective_lifecycle` also counts archived ancestors. */
+interface LifecycleFields { lifecycle: Lifecycle; effective_lifecycle: Lifecycle; archived_at?: string | null; archived_by?: string | null }
+export interface Client extends LifecycleFields { slug: string; name: string; created_at: string; created_by: string }
+export interface Project extends LifecycleFields { client_slug: string; slug: string; name: string; status: string; created_at: string; config?: ProjectConfig }
+export interface FavRef { type: "client" | "project" | "view"; client: string; project?: string; view?: string }
+export interface Favorite extends FavRef { name: string; path: string; status: string | null; created_at: string }
+export interface DeletePreview {
+  slug: string; name: string; lifecycle: Lifecycle; projects: number; views: number; revisions: number;
+  s3_objects: number; s3_bytes: number; client_users: number;
+}
 export interface TableauLink { workbook_id: string; workbook_name: string }
 export interface ProjectConfig { bq_project: string | null; tables: string[]; max_bytes_billed: number | null; default_max_bytes_billed?: number; tableau_link?: TableauLink | null }
 
@@ -53,7 +62,7 @@ export interface GateInfo {
   base_tables: string[]; suggestion: string;
 }
 export interface PublishGuard { needs_confirmation: true; reason: "unreviewed_imports"; elements: { id: string; title: string; status: string; sheet: string }[] }
-export interface ViewSummary {
+export interface ViewSummary extends LifecycleFields {
   client_slug: string; project_slug: string; slug: string; name: string; description?: string;
   draft_revision: number | null; published_revision: number | null; has_unpublished_changes: boolean; updated_at: string;
 }

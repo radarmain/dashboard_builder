@@ -199,8 +199,9 @@ def element_data(
     c = client_slug
     p, v = canon(c, p, v)
     # ClientAccess (authorization) and the lifecycle check run before anything touches the cache.
-    # Archived: builders get 409 (no query runs), client users get 404.
-    mode: Mode = "write" if user.is_builder else "portal"
+    # Archived: builders can still read saved content (so an archived view can be inspected);
+    # client users get 404. Ad-hoc queries (POST /query) are the 409 case.
+    mode: Mode = "read" if user.is_builder else "portal"
     if draft:
         if not user.is_builder:
             raise HTTPException(403, "builder access required for draft")

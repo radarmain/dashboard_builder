@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Alert, Box, Tab, Tabs, Typography } from "@mui/material";
+import { ArchivedBanner, FavStar, LifecycleMenu } from "../Lifecycle";
+import { invalidateAll, shown, useNavCache } from "../navTree";
 import { get, post, type Project, type TableauLink, type ViewSummary } from "../api";
 import { Btn, ErrorBox, Loading, PageHeader, errMsg, monoSx, slugify, viewStatus } from "../ui";
 import { ClientPreviewButton, PREVIEW_BASE } from "../Preview";
@@ -17,6 +19,8 @@ export function ProjectPage() {
   const [info, setInfo] = useState<Project | null>(null);
   const [tab, setTab] = useState<TabId | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+  useNavCache();
 
   useEffect(() => {
     get<Project>(`/clients/${client}/projects/${project}`)
@@ -25,14 +29,25 @@ export function ProjectPage() {
         setInfo(p); setTab((t) => t ?? (p.config?.tables.length ? "builder" : "settings"));
       })
       .catch((e) => setError(errMsg(e)));
-  }, [client, project, navigate]);
+  }, [client, project, navigate, reload]);
+  const archived = info?.effective_lifecycle === "archived";
   useEffect(() => { if (info?.name) document.title = `${info.name} · RADaR Dashboard Builder`; }, [info?.name]);
 
   return (
     <Box sx={{ p: 4 }}>
-      <PageHeader title={info?.name ?? project}
+      <PageHeader title={<>{info?.name ?? project} <FavStar always size={18} item={{ kind: "project", client, project }} name={info?.name ?? project} path={client} /></>}
         subtitle={<Typography component="span" variant="caption" sx={monoSx}>{client}.radar-analytics.com/{project}</Typography>}
-        action={<ClientPreviewButton to={`${PREVIEW_BASE}/c/${client}/p/${project}`} />} />
+        action={
+          <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+            {!archived && <ClientPreviewButton to={`${PREVIEW_BASE}/c/${client}/p/${project}`} />}
+            {info && (
+              <LifecycleMenu item={{ kind: "project", client, project }} name={info.name} lifecycle={info.lifecycle} publishedViews
+                onChanged={() => { invalidateAll(); setReload((n) => n + 1); }}
+                onDeleted={() => { invalidateAll(); navigate(`/c/${client}`); }} />
+            )}
+          </Box>
+        } />
+      {archived && <ArchivedBanner kind="project" />}
       <ErrorBox error={error} />
       <Tabs value={tab ?? false} onChange={(_, v: TabId) => setTab(v)} sx={{ mb: 3, borderBottom: 1, borderColor: "divider" }}>
         <Tab value="settings" label="Settings" />
@@ -50,12 +65,12 @@ export function ProjectPage() {
         <TableauSettings client={client} project={project} link={info.config.tableau_link ?? null}
           onLinked={(l) => setInfo((p) => (p && p.config ? { ...p, config: { ...p.config, tableau_link: l } } : p))} />
       )}
-      {tab === "builder" && <ViewList client={client} project={project} hasTables={!!info?.config?.tables.length} tableau={info?.config?.tableau_link ?? null} goSettings={() => setTab("settings")} />}
+      {tab === "builder" && <ViewList archived={archived} reload={reload} client={client} project={project} hasTables={!!info?.config?.tables.length} tableau={info?.config?.tableau_link ?? null} goSettings={() => setTab("settings")} />}
     </Box>
   );
 }
 
-function ViewList({ client, project, hasTables, tableau, goSettings }: { client: string; project: string; hasTables: boolean; tableau: TableauLink | null; goSettings: () => void }) {
+function ViewList({ client, project, hasTables, tableau, goSettings, archived, reload }: { archived: boolean; reload: number; client: string; project: string; hasTables: boolean; tableau: TableauLink | null; goSettings: () => void }) {
   const [views, setViews] = useState<ViewSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -75,8 +90,8 @@ function ViewList({ client, project, hasTables, tableau, goSettings }: { client:
   }
 
   useEffect(() => {
-    get<ViewSummary[]>(`/clients/${client}/projects/${project}/views`).then(setViews).catch((e) => setError(errMsg(e)));
-  }, [client, project]);
+    get<ViewSummary[]>(`/clients/${client}/projects/${project}/views?include_archived=true`).then(setViews).catch((e) => setError(errMsg(e)));
+  }, [client, project, reload]);
 
   return (
     <Box sx={{ display: "grid", gap: 2 }}>
@@ -88,12 +103,12 @@ function ViewList({ client, project, hasTables, tableau, goSettings }: { client:
       <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <Typography variant="h6" component="h2">Views</Typography>
         <Box sx={{ display: "flex", gap: 1 }}>
-          {tableau && hasTables && (
+          {tableau && hasTables && !archived && (
             <Btn variant="secondary" onClick={() => void startImport()} title="Creates a new view and fills an unsaved draft. Nothing is published.">
               Import from Tableau
             </Btn>
           )}
-          <Btn onClick={() => setAdding(true)}>Add view</Btn>
+          <Btn onClick={() => setAdding(true)} disabled={archived}>Add view</Btn>
         </Box>
       </Box>
       {adding && (
@@ -102,9 +117,9 @@ function ViewList({ client, project, hasTables, tableau, goSettings }: { client:
       )}
       <ErrorBox error={error} />
       {views === null && !error && <Loading />}
-      {views?.length === 0 && <Typography color="text.secondary">No views yet.</Typography>}
-      {views?.map((v) => (
-        <LinkCard key={v.slug} to={`/c/${client}/p/${project}/v/${v.slug}`} title={v.name} subtitle={v.slug} description={v.description} trailing={viewStatus(v)} />
+      {views && views.filter(shown).length === 0 && <Typography color="text.secondary">No views yet.</Typography>}
+      {views?.filter(shown).map((v) => (
+        <LinkCard key={v.slug} archived={v.effective_lifecycle === "archived"} to={`/c/${client}/p/${project}/v/${v.slug}`} title={v.name} subtitle={v.slug} description={v.description} trailing={viewStatus(v)} />
       ))}
     </Box>
   );

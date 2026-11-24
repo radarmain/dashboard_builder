@@ -6,7 +6,7 @@ import { alpha, type SxProps, type Theme } from "@mui/material/styles";
 import type { ViewSpec } from "@rdb/shared";
 import { ApiError, streamChat, type ChatEvent, type ChatOp } from "../api";
 import { Btn, errMsg } from "../ui";
-import { MONO } from "@rdb/core";
+import { Icon, MONO } from "@rdb/core";
 
 interface Step { text: string; done: boolean }
 interface Msg {
@@ -78,7 +78,7 @@ function StepLine({ step, reduce }: { step: Step; reduce: boolean }) {
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 1, color: "text.secondary", animation: reduce ? "none" : `${slideIn} 220ms ease-out both`, ...noMotion }}>
       <Box sx={{ width: 16, height: 16, display: "grid", placeItems: "center", flexShrink: 0 }}>
-        {step.done ? <Typography component="span" sx={{ color: "success.main", fontSize: 14, lineHeight: 1 }}>✓</Typography>
+        {step.done ? <Box component="span" sx={{ color: "success.main", display: "inline-flex" }}><Icon name="check" size={12} /></Box>
           : reduce ? <Typography component="span" sx={{ fontSize: 14, lineHeight: 1 }}>•</Typography> : <CircularProgress size={12} thickness={6} />}
       </Box>
       <Typography variant="caption">{step.text}</Typography>

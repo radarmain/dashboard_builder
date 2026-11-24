@@ -4,6 +4,7 @@ import { useAuth } from "@rdb/core";
 import { Btn, LOGO } from "@rdb/core";
 import { AlertBanner } from "./AlertBanner";
 import { SidebarTree } from "./SidebarTree";
+import { Notifier } from "./Lifecycle";
 
 /** Navigation-drawer-style sidebar (pill-shaped selected indicator) + routed content. */
 export function Layout() {
@@ -44,6 +45,7 @@ export function Layout() {
         </Box>
       </Box>
       <Box component="main" sx={{ minWidth: 0, flex: 1, overflow: "auto" }}><Outlet /></Box>
+      <Notifier />
     </Box>
     </Box>
   );
