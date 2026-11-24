@@ -172,6 +172,7 @@ def rename_checks(http: httpx.Client, admin: str, client: str, sql: str) -> None
     p0, p1, p2 = f"ren-{tag}", f"ren-{tag}-renamed", f"ren-{tag}-two"
     v0, v1, vo = f"orig-{tag}", f"orig-{tag}-new", f"other-{tag}"
     for slug in (p0, p2):
+        temp_projects.append(("rdb-test", slug))
         r = http.post(f"{C}/projects", json={"name": f"Ren {slug}", "slug": slug}, headers=H(admin))
         check(f"rename: create project {slug}", r.status_code == 201, str(r.status_code))
         r = http.put(
@@ -343,6 +344,7 @@ def rename_import_checks(http: httpx.Client, admin: str) -> None:
     s3c = session.client("s3")
     bucket = os.environ["RDB_DATA_BUCKET"]
     pre = lambda p: f"clients/rdb-test/projects/{p}/imports/{iid}/"  # noqa: E731
+    temp_projects.append(("rdb-test", p0))
     r = http.post(f"{C}/projects", json={"name": f"Imp {tag}", "slug": p0}, headers=H(admin))
     check("rename+import: create project", r.status_code == 201, str(r.status_code))
     link = {"workbook_id": "0123abcd-4567-89ef-0123-456789abcdef", "workbook_name": "WB smoke"}
@@ -391,6 +393,406 @@ def rename_import_checks(http: httpx.Client, admin: str) -> None:
     for k in keys:
         s3c.delete_object(Bucket=bucket, Key=k)
     table.delete_item(Key={"PK": "CLIENT#rdb-test", "SK": f"IMPORT#{p1}#{iid}"})
+
+
+# ---------------------------------------------------------------- archive / delete lifecycle
+# Temporary content created by a run: (client, project) pairs and whole clients. Archived and then
+# permanently deleted (admin API) in the `finally` of main(); only things this run created.
+temp_projects: list[tuple[str, str]] = []
+temp_clients: list[str] = []
+
+
+def _ddb():  # noqa: ANN202
+    return session.resource("dynamodb").Table(os.environ.get("RDB_TABLE_NAME", "rdb_main"))
+
+
+def _s3_keys(prefix: str) -> list[str]:
+    r = session.client("s3").list_objects_v2(Bucket=os.environ["RDB_DATA_BUCKET"], Prefix=prefix)
+    return [o["Key"] for o in r.get("Contents", [])]
+
+
+def _ddb_pk(pk: str) -> list[str]:
+    from boto3.dynamodb.conditions import Key
+
+    r = _ddb().query(KeyConditionExpression=Key("PK").eq(pk), ConsistentRead=True)
+    return [i["SK"] for i in r["Items"]]
+
+
+def cleanup_temp(http: httpx.Client, admin: str) -> None:
+    """Archive then permanently delete everything this run created (never the fixtures)."""
+    done = 0
+    seen: set[tuple[str, str]] = set()
+    for c, p in temp_projects:
+        path = f"/api/clients/{c}/projects/{p}"
+        r = http.get(path, headers=H(admin))
+        if r.status_code != 200:
+            continue  # already deleted
+        slug = r.json()["slug"]  # old slugs resolve to the canonical one
+        if (c, slug) in seen:
+            continue
+        seen.add((c, slug))
+        path = f"/api/clients/{c}/projects/{slug}"
+        if r.json().get("lifecycle") == "active":
+            http.post(f"{path}/archive", headers=H(admin))
+        d = http.delete(f"{path}?confirm={slug}", headers=H(admin))
+        done += d.status_code == 200
+        if d.status_code != 200:
+            print(f"cleanup: could not delete {c}/{slug}: {d.status_code}")
+    for c in temp_clients:
+        path = f"/api/clients/{c}"
+        r = http.get(path, headers=H(admin))
+        if r.status_code != 200:
+            continue
+        if r.json().get("lifecycle") == "active":
+            http.post(f"{path}/archive", headers=H(admin))
+        d = http.delete(f"{path}?confirm={c}", headers=H(admin))
+        done += d.status_code == 200
+        if d.status_code != 200:
+            print(f"cleanup: could not delete client {c}: {d.status_code}")
+    print(f"temp content archived + permanently deleted: {done}")
+
+
+def lifecycle_checks(  # noqa: PLR0915
+    http: httpx.Client,
+    admin: str,
+    admin_sub: str,
+    analyst: str,
+    client: str,
+    client_sub: str,
+    sql: str,
+) -> None:
+    tag = uuid.uuid4().hex[:6]
+    LC, P1, P2, PC = f"rdb-lc-{tag}", "main", "second", "cap"
+    V1, V2 = "alpha", "beta"
+    C = f"/api/clients/{LC}"
+    PTL = f"/api/portal/clients/{LC}"
+    temp_clients.append(LC)
+    r = http.post("/api/clients", json={"name": f"LC {tag}", "slug": LC}, headers=H(admin))
+    check("lifecycle: create temp client", r.status_code == 201, str(r.status_code))
+    for p in (P1, P2, PC):
+        http.post(f"{C}/projects", json={"name": p.title(), "slug": p}, headers=H(admin))
+    http.put(
+        f"{C}/projects/{P1}/settings",
+        json={"bq_project": BQ_PROJECT, "tables": [FQN]},
+        headers=H(admin),
+    )
+    for v in (V1, V2):
+        http.post(f"{C}/projects/{P1}/views", json={"name": v, "slug": v}, headers=H(admin))
+    spec = {
+        "view": {"name": "LC", "slug": V1},
+        "layout": [{"element_id": "el_1", "x": 0, "y": 0, "w": 12, "h": 6}],
+        "elements": [
+            {"id": "el_1", "type": "kpi", "title": "n", "sql": sql, "cache_ttl_seconds": 3600}
+        ],
+    }
+    PA, VA = f"{C}/projects/{P1}", f"{C}/projects/{P1}/views/{V1}"
+    http.post(f"{VA}/save", json=spec, headers=H(admin))
+    http.post(f"{VA}/save", json=spec, headers=H(admin))
+    r = http.post(f"{VA}/publish", headers=H(admin))
+    check("lifecycle: published temp view", r.status_code == 200, r.text[:120])
+    http.post(
+        "/api/admin/access", json={"user_sub": client_sub, "client_slug": LC}, headers=H(admin)
+    )
+    PV = f"{PTL}/projects/{P1}/views/{V1}"
+
+    def portal_ok() -> bool:
+        return (
+            http.get(PTL, headers=H(client)).status_code == 200
+            and http.get(f"{PTL}/projects/{P1}", headers=H(client)).status_code == 200
+            and http.get(PV, headers=H(client)).status_code == 200
+            and http.get(f"{PV}/data/el_1", headers=H(client)).status_code == 200
+        )
+
+    def portal_404(*paths: str) -> bool:
+        return all(http.get(p, headers=H(client)).status_code == 404 for p in paths)
+
+    check("lifecycle: portal works before archiving", portal_ok())
+
+    # ---- permission matrix ----
+    for what, path in (("project", PA), ("view", VA)):
+        r1 = http.post(f"{path}/archive", headers=H(analyst))
+        r2 = http.post(f"{path}/restore", headers=H(analyst))
+        check(
+            f"perm: analyst can archive + restore a {what}",
+            r1.status_code == 200 and r2.status_code == 200,
+            f"{r1.status_code}/{r2.status_code}",
+        )
+    r1 = http.post(f"{C}/archive", headers=H(analyst))
+    r2 = http.post(f"{C}/restore", headers=H(analyst))
+    check(
+        "perm: analyst cannot archive or restore a client",
+        r1.status_code == 403 and r2.status_code == 403,
+    )
+    check(
+        "perm: client user cannot archive",
+        http.post(f"{PA}/archive", headers=H(client)).status_code == 403,
+    )
+    http.post(f"{VA}/archive", headers=H(admin))
+    http.post(f"{PA}/archive", headers=H(admin))
+    http.post(f"{C}/archive", headers=H(admin))
+    codes = [
+        http.delete(f"{VA}?confirm={V1}", headers=H(analyst)).status_code,
+        http.delete(f"{PA}?confirm={P1}", headers=H(analyst)).status_code,
+        http.delete(f"{C}?confirm={LC}", headers=H(analyst)).status_code,
+        http.get(f"{C}/delete-preview", headers=H(analyst)).status_code,
+    ]
+    check(
+        "perm: analyst gets 403 on every permanent delete + preview", codes == [403] * 4, str(codes)
+    )
+    for p in (VA, PA, C):
+        http.post(f"{p}/restore", headers=H(admin))
+    r = http.delete(f"{VA}?confirm={V1}", headers=H(admin))
+    check("delete: refused on an active item (409)", r.status_code == 409, str(r.status_code))
+    http.post(f"{VA}/archive", headers=H(admin))
+    r = http.delete(f"{VA}?confirm=wrong", headers=H(admin))
+    check("delete: wrong confirm slug -> 400", r.status_code == 400, str(r.status_code))
+    r = http.delete(f"{VA}", headers=H(admin))
+    check("delete: missing confirm slug -> 400", r.status_code == 400, str(r.status_code))
+    http.post(f"{VA}/restore", headers=H(admin))
+
+    # ---- portal 404s and recovery (client user) ----
+    http.post(f"{VA}/archive", headers=H(admin))
+    check("portal: archived view -> 404 (view, data)", portal_404(PV, f"{PV}/data/el_1"))
+    views = http.get(f"{PTL}/projects/{P1}", headers=H(client)).json()
+    check("portal: archived view not in the project's cards", V1 not in json.dumps(views))
+    http.post(f"{VA}/restore", headers=H(admin))
+    check("portal: works again after restoring the view", portal_ok())
+    http.post(f"{PA}/archive", headers=H(admin))
+    check(
+        "portal: archived project -> 404 (project, view, data)",
+        portal_404(f"{PTL}/projects/{P1}", PV, f"{PV}/data/el_1"),
+    )
+    cards = http.get(PTL, headers=H(client))
+    check(
+        "portal: archived project not on the client page",
+        cards.status_code == 200 and P1 not in json.dumps(cards.json()),
+    )
+
+    # ---- archived is read-only for builders ----
+    check(
+        "archived: builder can still GET the project",
+        http.get(PA, headers=H(admin)).json().get("effective_lifecycle") == "archived",
+    )
+    check(
+        "archived: builder can GET a view in an archived project",
+        http.get(VA, headers=H(admin)).status_code == 200,
+    )
+    blocked = {
+        "save": http.post(f"{VA}/save", json=spec, headers=H(admin)).status_code,
+        "publish": http.post(f"{VA}/publish", headers=H(admin)).status_code,
+        "settings": http.put(
+            f"{PA}/settings", json={"bq_project": BQ_PROJECT, "tables": [FQN]}, headers=H(admin)
+        ).status_code,
+        "create view": http.post(
+            f"{PA}/views", json={"name": "n", "slug": "nope"}, headers=H(admin)
+        ).status_code,
+        "rename": http.patch(PA, json={"name": "New name"}, headers=H(admin)).status_code,
+        "rename view": http.patch(VA, json={"name": "New name"}, headers=H(admin)).status_code,
+    }
+    check("archived: writes return 409", set(blocked.values()) == {409}, str(blocked))
+    lst = http.get(f"{C}/projects", headers=H(admin)).json()
+    lst2 = http.get(f"{C}/projects?include_archived=true", headers=H(admin)).json()
+    check(
+        "archived: hidden from lists unless include_archived",
+        P1 not in [p["slug"] for p in lst] and P1 in [p["slug"] for p in lst2],
+    )
+    http.post(f"{PA}/restore", headers=H(admin))
+    check("portal: works again after restoring the project", portal_ok())
+    http.post(f"{C}/archive", headers=H(admin))
+    me = http.get("/api/portal/me", headers=H(client)).json()
+    check(
+        "portal: archived client -> 404 + not in /portal/me",
+        portal_404(PTL, PV) and LC not in [c["slug"] for c in me],
+    )
+    check(
+        "archived client: writes return 409",
+        http.post(f"{C}/projects", json={"name": "x", "slug": "nope"}, headers=H(admin)).status_code
+        == 409,
+    )
+    http.post(f"{C}/restore", headers=H(admin))
+    check("portal: works again after restoring the client", portal_ok())
+
+    # ---- delete-preview counts ----
+    http.post(f"{VA}/archive", headers=H(admin))
+    pv = http.get(f"{VA}/delete-preview", headers=H(admin)).json()
+    check(
+        "preview: view counts",
+        pv.get("views") == 1 and pv.get("revisions") == 2 and pv.get("s3_objects", 0) >= 2,
+        str(pv),
+    )
+    http.post(f"{VA}/restore", headers=H(admin))
+    http.post(f"{PA}/archive", headers=H(admin))
+    pv = http.get(f"{PA}/delete-preview", headers=H(admin)).json()
+    check(
+        "preview: project counts",
+        pv.get("projects") == 1 and pv.get("views") == 2 and pv.get("revisions") == 2,
+        str(pv),
+    )
+    http.post(f"{PA}/restore", headers=H(admin))
+    http.post(f"{C}/archive", headers=H(admin))
+    pv = http.get(f"{C}/delete-preview", headers=H(admin)).json()
+    check(
+        "preview: client counts",
+        pv.get("projects") == 3 and pv.get("views") == 2 and pv.get("client_users") == 1,
+        str(pv),
+    )
+    http.post(f"{C}/restore", headers=H(admin))
+
+    # ---- favorites ----
+    F = "/api/me/favorites"
+
+    def fav(t: str, p: str | None = None, v: str | None = None) -> dict[str, str]:
+        out = {"type": t, "client": LC}
+        if p:
+            out["project"] = p
+        if v:
+            out["view"] = v
+        return out
+
+    check("favorites: client user forbidden", http.get(F, headers=H(client)).status_code == 403)
+    for f in (fav("client"), fav("project", P1), fav("view", P1, V2)):
+        http.put(F, json=f, headers=H(admin))
+    got = http.get(F, headers=H(admin)).json()
+    mine = [x for x in got if x["client"] == LC]
+    check(
+        "favorites: add + order (oldest first) + resolved names",
+        [x["type"] for x in mine] == ["client", "project", "view"]
+        and mine[2]["path"].endswith("/ Main")
+        and mine[0]["name"] == f"LC {tag}",
+        str([(x["type"], x["name"], x["path"]) for x in mine]),
+    )
+    r = http.put(F, json=fav("view", P1, "nope"), headers=H(admin))
+    check("favorites: unknown item -> 404", r.status_code == 404)
+    http.request("DELETE", F, json=fav("project", P1), headers=H(admin))
+    got = [x["type"] for x in http.get(F, headers=H(admin)).json() if x["client"] == LC]
+    check("favorites: remove", got == ["client", "view"], str(got))
+    # renamed slug: stored under the old slug, read back as the new one (rewritten lazily)
+    r = http.patch(f"{PA}/views/{V2}", json={"slug": "beta-renamed"}, headers=H(admin))
+    check("favorites: renamed view", r.status_code == 200, r.text[:100])
+    got = [
+        x for x in http.get(F, headers=H(admin)).json() if x["client"] == LC and x["type"] == "view"
+    ]
+    sks = _ddb_pk(f"USER#{admin_sub}")
+    check(
+        "favorites: renamed slug resolves + item rewritten",
+        len(got) == 1
+        and got[0]["view"] == "beta-renamed"
+        and f"FAV#VIEW#{LC}#{P1}#beta-renamed" in sks
+        and f"FAV#VIEW#{LC}#{P1}#{V2}" not in sks,
+        str(got),
+    )
+    # archived items are hidden (and come back on restore)
+    http.post(f"{PA}/archive", headers=H(admin))
+    got = [x["type"] for x in http.get(F, headers=H(admin)).json() if x["client"] == LC]
+    check("favorites: archived items hidden", got == ["client"], str(got))
+    http.post(f"{PA}/restore", headers=H(admin))
+    got = [x["type"] for x in http.get(F, headers=H(admin)).json() if x["client"] == LC]
+    check("favorites: restored items reappear", got == ["client", "view"], str(got))
+    # cap: fill with real views in the `cap` project, then one more is refused
+    for i in range(50):
+        http.post(
+            f"{C}/projects/{PC}/views", json={"name": f"v{i}", "slug": f"v{i}"}, headers=H(admin)
+        )
+    n0 = len(http.get(F, headers=H(admin)).json())
+    codes = []
+    for i in range(50):
+        r = http.put(F, json=fav("view", PC, f"v{i}"), headers=H(admin))
+        codes.append(r.status_code)
+        if r.status_code == 409:
+            break
+    total = len(http.get(F, headers=H(admin)).json())
+    check(
+        "favorites: 50 cap enforced (409)",
+        codes[-1] == 409 and total == 50,
+        f"start={n0} total={total}",
+    )
+
+    # ---- permanent delete: view, project, client ----
+    s3c_prefix = lambda *a: "clients/" + "/".join(a) + "/"  # noqa: E731
+    vkeys = _s3_keys(s3c_prefix(LC, "projects", P1, "views", V1))
+    http.post(f"{VA}/archive", headers=H(admin))
+    r = http.delete(f"{VA}?confirm={V1}", headers=H(admin))
+    check(
+        "delete view: ok", r.status_code == 200 and r.json()["counts"]["views"] == 1, r.text[:150]
+    )
+    check(
+        "delete view: no S3 objects left",
+        bool(vkeys) and not _s3_keys(s3c_prefix(LC, "projects", P1, "views", V1)),
+    )
+    check("delete view: DynamoDB item gone", f"VIEW#{P1}#{V1}" not in _ddb_pk(f"CLIENT#{LC}"))
+    check(
+        "delete view: sibling view untouched",
+        http.get(f"{PA}/views/beta-renamed", headers=H(admin)).status_code == 200,
+    )
+    check(
+        "delete view: slug free again",
+        http.post(f"{PA}/views", json={"name": "again", "slug": V1}, headers=H(admin)).status_code
+        == 201,
+    )
+    # project with an alias + seeded import budget item
+    http.patch(f"{C}/projects/{P2}", json={"slug": "second-renamed"}, headers=H(admin))
+    P2n = "second-renamed"
+    _ddb().put_item(Item={"PK": f"CLIENT#{LC}", "SK": f"IMPORT#{P2n}#abc", "scanned_bytes": 1})
+    session.client("s3").put_object(
+        Bucket=os.environ["RDB_DATA_BUCKET"],
+        Key=f"clients/{LC}/projects/{P2n}/imports/abc/report.json",
+        Body=b"{}",
+    )
+    r = http.delete(f"{C}/projects/{P2n}?confirm={P2n}", headers=H(admin))
+    check("delete project: active -> 409", r.status_code == 409)
+    http.post(f"{C}/projects/{P2n}/archive", headers=H(admin))
+    r = http.delete(f"{C}/projects/{P2n}?confirm={P2n}", headers=H(admin))
+    check("delete project: ok", r.status_code == 200, r.text[:150])
+    left = [k for k in _ddb_pk(f"CLIENT#{LC}") if P2n in k or P2 in k]
+    check("delete project: no DynamoDB items (project, imports, aliases)", not left, str(left))
+    check("delete project: no S3 objects left", not _s3_keys(s3c_prefix(LC, "projects", P2n)))
+    check(
+        "delete project: other project untouched",
+        http.get(PA, headers=H(admin)).status_code == 200
+        and bool(_s3_keys(s3c_prefix(LC, "projects", P1))),
+    )
+    check(
+        "delete project: old slug is gone (404) and free",
+        http.get(f"{C}/projects/{P2}", headers=H(admin)).status_code == 404
+        and http.post(f"{C}/projects", json={"name": "x", "slug": P2}, headers=H(admin)).status_code
+        == 201,
+    )
+    # favorites pointing at deleted content are pruned on read
+    http.put(F, json=fav("project", P2), headers=H(admin))
+    http.post(f"{C}/projects/{P2}/archive", headers=H(admin))
+    http.delete(f"{C}/projects/{P2}?confirm={P2}", headers=H(admin))
+    http.get(F, headers=H(admin))
+    sks = _ddb_pk(f"USER#{admin_sub}")
+    check("favorites: pruned after the item is deleted", f"FAV#PROJECT#{LC}#{P2}" not in sks)
+    # client: everything under the prefix, access items, Cognito accounts stay
+    check(
+        "delete client: access item present before", f"CLIENT#{LC}" in _ddb_pk(f"USER#{client_sub}")
+    )
+    http.post(f"{C}/archive", headers=H(admin))
+    r = http.delete(f"{C}?confirm={LC}", headers=H(admin))
+    check("delete client: ok", r.status_code == 200, r.text[:150])
+    check("delete client: no DynamoDB items under the client", _ddb_pk(f"CLIENT#{LC}") == [])
+    check("delete client: no S3 objects under the client", not _s3_keys(f"clients/{LC}/"))
+    check(
+        "delete client: user access item removed",
+        f"CLIENT#{LC}" not in _ddb_pk(f"USER#{client_sub}"),
+    )
+    check(
+        "delete client: Cognito account still enabled",
+        idp.admin_get_user(UserPoolId=POOL, Username=client_sub)["Enabled"],
+    )
+    check(
+        "delete client: portal 404 and not in /portal/me",
+        portal_404(PTL)
+        and LC not in [c["slug"] for c in http.get("/api/portal/me", headers=H(client)).json()],
+    )
+    check("delete client: builder 404", http.get(C, headers=H(admin)).status_code == 404)
+    r = http.post("/api/clients", json={"name": "Again", "slug": LC}, headers=H(admin))
+    check("delete client: slug free again", r.status_code == 201, str(r.status_code))
+    # leftovers of this run: favorites of the temp admin user
+    for sk in _ddb_pk(f"USER#{admin_sub}"):
+        if sk.startswith("FAV#"):
+            _ddb().delete_item(Key={"PK": f"USER#{admin_sub}", "SK": sk})
 
 
 def admin_email_of(sub: str) -> str:
@@ -725,6 +1127,7 @@ def main() -> None:
         )
         rename_checks(http, admin, client, sql)
         rename_import_checks(http, admin)
+        lifecycle_checks(http, admin, admin_sub, analyst, client, client_sub, sql)
         http.request(
             "DELETE",
             "/api/admin/access",
@@ -774,6 +1177,10 @@ def main() -> None:
             http.post(f"{V}/revisions/1/restore", headers=H(admin)).status_code in (200, 404),
         )
     finally:
+        try:
+            cleanup_temp(http, admin)
+        except Exception as e:  # noqa: BLE001
+            print("temp content cleanup failed:", type(e).__name__, str(e)[:200])
         for u in users:
             try:
                 idp.admin_delete_user(UserPoolId=POOL, Username=u)
